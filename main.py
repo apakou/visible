@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import FastAPI, Form, Response
+from fastapi import FastAPI, Form, Request, Response
 from twilio.twiml.messaging_response import MessagingResponse
 
 logging.basicConfig(level=logging.INFO)
@@ -22,6 +22,15 @@ async def handle_whatsapp_message(Body: str = Form(...)):
     logger.info(f"message: {msg}")
     # Chatbot logic goes here
     return Response(content=str(response), media_type="application/xml")
+
+
+@app.post("/webhook")
+async def echo_webhook(request: Request):
+    data = await request.json()
+
+    print(f"Received webhook: {data}")
+
+    return {"message": "Webhook received", "data": data}
 
 
 if __name__ == "__main__":
