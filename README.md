@@ -1,4 +1,4 @@
-# VoiceStock — WhatsApp AI Inventory Assistant
+# Visbl — WhatsApp AI Inventory Assistant
 
 > A WhatsApp-based voice-driven inventory management chatbot for micro-sized businesses (street vendors, market stalls, sole traders). Business owners speak naturally about what they sold and the price; the AI extracts structured inventory data and stores it automatically.
 
