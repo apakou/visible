@@ -1,11 +1,9 @@
-# Visbl — WhatsApp AI Inventory Assistant
-
-> A WhatsApp-based voice-driven inventory management chatbot for micro-sized businesses (street vendors, market stalls, sole traders). Business owners speak naturally about what they sold and the price; the AI extracts structured inventory data and stores it automatically.
+# Visbl — WhatsApp Financial Logging Assistant
+> A WhatsApp-based AI chatbot for informal container shop operators in Ghana's markets. Business owners send daily sales, expenses, and cash counts via WhatsApp in English or Twi. The AI structures that data into a verified financial record — and after 60–90 days, connects owners to formal credit for the first time.
 
 ---
 
 ## Table of Contents
-
 1. [Technology Stack](#1-technology-stack)
 2. [System Architecture Diagram](#2-system-architecture-diagram)
 3. [Technical Risks and Constraints](#3-technical-risks-and-constraints)
@@ -18,11 +16,12 @@
 
 | Layer | Choice | Rationale |
 |---|---|---|
-| **Chat Interface** | WhatsApp Business API (Cloud API via Meta) | Ubiquitous in target markets (Africa, LatAm, SEA); zero app install friction |
-| **Voice Input** | WhatsApp native voice messages (OGG/Opus audio) | Users record directly in WhatsApp; no extra hardware needed |
-| **Outbound Messages** | WhatsApp template messages + free-form replies | Structured confirmations + natural conversation |
+| **Chat Interface** | Twilio WhatsApp Sandbox (MVP) → Meta Cloud API (production) | Sandbox requires no Meta business verification — fastest path to a working prototype. Upgrade path to Meta Cloud API is one config swap. |
+| **Input modality** | Text only (v1). Voice notes as v2 stretch goal. | Target ICP texts naturally. Voice adds Whisper dependency — defer to v2. |
+| **Outbound Messages** | Free-form replies via Twilio API | Conversational confirmations + proactive Sunday P&L summaries |
+| **Python integration layer** | Twilio Python SDK | Handles webhook signature verification and message sending. |
 
-> No dedicated mobile/web frontend is required in V1. WhatsApp is the UI.
+> No dedicated mobile or web frontend is required in v1. WhatsApp is the UI.
 
 ---
 
@@ -30,11 +29,11 @@
 
 | Component | Technology | Role |
 |---|---|---|
-| **API Server** | **Node.js** (Fastify) or **Python** (FastAPI) | Webhook receiver, orchestrator, business logic |
-| **Webhook Handler** | HTTP POST endpoint (TLS required by Meta) | Receives incoming WhatsApp events (text, audio, status) |
-| **Message Queue** | **Redis** + BullMQ (Node) / Celery (Python) | Decouples webhook reception from AI processing; handles retries |
-| **Session Manager** | Redis (TTL-based) | Tracks per-user conversation state and pending confirmations |
-| **REST/GraphQL Admin API** | Same backend framework | Optional dashboard queries (inventory reports, corrections) |
+| **API Server** | Python FastAPI | Webhook receiver, orchestrator, business logic. Async-native. Auto-generates API docs. |
+| **Webhook Handler** | POST /webhook/whatsapp | Receives all inbound Twilio WhatsApp messages. Twilio signature verified on every request. |
+| **Session Manager** | SQLite (v1) → Redis (v2) | Tracks per-user conversation state. Redis upgrade deferred until concurrent users require it. |
+| **Scheduler** | APScheduler (Python) | Weekly P&L cron every Sunday 7pm. Day 60 and day 90 credit score generation. Daily reminder if no log for 2+ days. |
+| **WhatsApp Client** | Twilio Python SDK | Sends replies via Twilio Messages API. |
 
 ---
 
@@ -42,19 +41,23 @@
 
 | Type | Technology | Stores |
 |---|---|---|
-| **Primary Relational DB** | **PostgreSQL** (Supabase or self-hosted) | Products, categories, transactions, users/businesses |
-| **Cache / Session Store** | **Redis** | Conversation context, rate-limit counters, job queues |
-| **Object Storage** | **AWS S3** / Cloudflare R2 / Supabase Storage | Raw voice message files (for audit and re-processing) |
-| **Vector Store** *(optional v2)* | **pgvector** (PostgreSQL extension) | Semantic product name matching (fuzzy lookup) |
+| **Primary DB** | SQLite (MVP) → PostgreSQL (production) | Owners, transactions, financial profiles |
+| **ORM** | SQLAlchemy | Database-agnostic — same codebase runs on SQLite and PostgreSQL. One config change to migrate. |
+| **Object Storage** | Deferred to v2 | Raw audio storage not required until voice input is added |
+| **Vector Store** | Deferred to v2 | pgvector for semantic product matching — not needed for text-only financial logging |
 
-**Core DB Schema (simplified):**
+**Core DB Schema:**
+```
+owners            (id, phone_number, name, shop_name, location, language_pref, onboarded_at)
+transactions      (id, owner_id, type[sale|expense|cash_count|event], amount_pesewas,
+                   description, category, raw_message, parse_confidence, logged_at)
+financial_profiles (id, owner_id, period_start, period_end, total_revenue_pesewas,
+                   total_expenses_pesewas, gross_profit_pesewas, days_logged,
+                   consistency_score, credit_readiness_score,
+                   summary_text_en, summary_text_tw, lender_profile_json, generated_at)
+```
 
-```
-businesses     (id, name, phone_number, timezone, currency)
-products       (id, business_id, name, category, unit, created_at)
-inventory_log  (id, business_id, product_id, quantity, unit_price, action[sale|restock], recorded_at, raw_transcript)
-conversations  (id, business_id, wa_message_id, direction, content_type, payload, created_at)
-```
+> All monetary amounts stored in GHS pesewas (integers) to avoid floating point errors.
 
 ---
 
@@ -62,123 +65,107 @@ conversations  (id, business_id, wa_message_id, direction, content_type, payload
 
 | Step | Model / Service | Purpose |
 |---|---|---|
-| **Speech-to-Text (STT)** | **OpenAI Whisper API** (`whisper-1`) | Transcribes WhatsApp voice notes (OGG → text); multilingual |
-| **Entity Extraction (NLU)** | **OpenAI GPT-4o** (function calling / structured output) | Parses transcript → `{product, quantity, unit, price, action}` JSON |
-| **Fuzzy Product Matching** | PostgreSQL `pg_trgm` + GPT-4o fallback | Maps spoken name ("tomato sauce") to existing product record |
-| **Confirmation Generation** | GPT-4o | Generates natural-language confirmation message in user's language |
-| **Language Detection** | Whisper (automatic) + langdetect lib | Supports multilingual input without configuration |
+| **Intent Classification + Entity Extraction** | Claude Haiku (`claude-haiku-4-5-20251001`) | Parses free-form WhatsApp text → structured JSON `{intent, amount_ghs, units, description, category, confidence, original_language}`. Fast and cheap for high-volume parse tasks. |
+| **Weekly P&L Summary Generation** | Claude Sonnet (`claude-sonnet-4-20250514`) | Generates plain-language profit/loss summary in owner's language preference (English or Twi). |
+| **Credit Profile Narrative** | Claude Sonnet (`claude-sonnet-4-20250514`) | Generates the lender-readable financial profile narrative and credit readiness interpretation. |
+| **Language handling** | Claude (native) | Handles mixed Twi/English ("Twenglish") natively. No separate translation step. Returns `original_language: en | tw | mixed` on every parse. |
 
 **AI Extraction Prompt Pattern (system prompt excerpt):**
+```
+You are a financial logging assistant for informal market traders in Ghana.
+The owner may write in English, Twi, or a mix of both.
 
+Extract the intent and data from the message below.
+Return ONLY valid JSON. No explanation. No preamble.
+
+{
+  "intent": "sale|expense|cash_count|event|summary_request|profile_request|unknown",
+  "amount_ghs": <float or null>,
+  "units": <int or null>,
+  "description": "<string in English, translated if needed>",
+  "category": "cogs|operating|return|other|null",
+  "confidence": <float 0.0-1.0>,
+  "original_language": "en|tw|mixed"
+}
 ```
-You are an inventory assistant. Given a spoken business transaction transcript,
-extract a JSON object with fields:
-  action: "sale" | "restock" | "query"
-  items: [{ name: string, quantity: number, unit: string, unit_price: number, currency: string }]
-  confidence: 0..1
-Return ONLY valid JSON. If a field is missing, use null.
-```
+
+> Use `claude-haiku-4-5-20251001` for all parsing (temperature 0.0, max_tokens 256). Use `claude-sonnet-4-20250514` for summaries and narratives (temperature 0.3, max_tokens 512–1024).
 
 ---
 
-### 1.5 Hosting Options
+### 1.5 Hosting
 
-| Tier | Option | Best For |
+| Tier | Option | Notes |
 |---|---|---|
-| **Starter / MVP** | **Railway** or **Render** (free tier → paid) | Fast deployment, no DevOps, $0–20/month |
-| **Growth** | **AWS** (ECS Fargate + RDS PostgreSQL + ElastiCache Redis) | Scalable, managed, pay-per-use |
-| **Growth (alternative)** | **Google Cloud Run** + Cloud SQL + MemoryStore | Serverless containers, auto-scaling to zero |
-| **Enterprise / Cost-control** | **Hetzner VPS** + Coolify (self-hosted PaaS) | Cheapest compute in Africa/EU; requires more ops |
-| **Managed BaaS** | **Supabase** (DB + Storage + Auth) + Vercel (API) | Fastest stack, generous free tier, built-in pgvector |
+| **MVP** | Fly.io | Team has prior deployment experience here. Free tier sufficient. HTTPS by default — required for Twilio webhook. |
+| **Production** | Fly.io (scale up) or Railway | Migrate SQLite → PostgreSQL before real users. Add Redis for session management. |
 
-**Recommended MVP stack:** Supabase + Railway + Cloudflare (DNS/TLS proxy)
+**Recommended MVP stack:** Python FastAPI + Twilio Sandbox + SQLite + Fly.io + Claude API
 
 ---
 
-## 2. System Architecture Diagram
+## 2. System Architecture
 
 ### 2.1 Application Flow
 
 ```mermaid
 flowchart TD
-    A([Business Owner\nWhatsApp]) -->|Voice note / Text| B[Meta Cloud API\nWebhook]
-    B -->|POST /webhook| C[Backend API Server\nFastAPI / Fastify]
-
-    C --> D{Message Type?}
-    D -->|Audio OGG| E[Download Audio File\nfrom Meta CDN]
-    D -->|Text| G[NLU Pipeline]
-
-    E --> F[Object Storage\nS3 / R2\nraw audio saved]
-    E --> STT[OpenAI Whisper API\nSpeech-to-Text]
-    STT -->|Transcript| G
-
-    G[GPT-4o\nEntity Extraction\nfunction calling] -->|Structured JSON| H{Confidence ≥ 0.8?}
-
-    H -->|Yes| I[Product Matcher\npg_trgm + vector search]
-    H -->|No| LOW[Ask Clarification\nvia WhatsApp reply]
-    LOW --> A
-
-    I -->|Match found| J[Write to PostgreSQL\ninventory_log]
-    I -->|No match| NEW[Confirm new product\nwith user]
-    NEW --> A
-
-    J --> K[Generate Confirmation\nGPT-4o / template]
-    K -->|Send reply| L[Meta Cloud API\nSend Message]
-    L --> A
-
-    subgraph Queue [Async Job Queue — Redis + BullMQ]
-        direction LR
-        C -.->|enqueue job| QW[Worker Process]
-        QW --> STT
-        QW --> G
+    A([Kwaku\nWhatsApp]) -->|Text message| B[Twilio\nWhatsApp Sandbox]
+    B -->|POST /webhook/whatsapp| C[FastAPI Backend\nFly.io]
+    C --> D{Owner known?}
+    D -->|No| OB[Onboarding Flow\n7-message registration]
+    OB -->|Create owner record| PG
+    D -->|Yes| E[Verify Twilio\nSignature]
+    E --> F[Claude Haiku\nIntent Classifier]
+    F -->|Structured JSON| G{Intent}
+    G -->|sale / expense / cash_count| H[Write to transactions\nSQLite]
+    G -->|summary_request| I[APScheduler or\non-demand P&L]
+    G -->|profile_request| J[Credit Score\nCalculation]
+    G -->|unknown / low confidence| K[Ask clarifying\nquestion]
+    H --> L[Claude Haiku\nGenerate confirmation reply]
+    I --> M[Claude Sonnet\nGenerate P&L summary]
+    J --> N[Claude Sonnet\nGenerate credit narrative]
+    L & M & N -->|Send reply| TW[Twilio API\nSend WhatsApp]
+    TW --> A
+    subgraph DB [Data Layer — SQLite]
+        PG[(owners\ntransactions\nfinancial_profiles)]
     end
-
-    subgraph DB [Data Layer]
-        J
-        PostgreSQL[(PostgreSQL\nproducts\ninventory_log)]
-        Redis[(Redis\nsessions + queue)]
-        J --> PostgreSQL
-        C <--> Redis
+    H --> PG
+    I --> PG
+    J --> PG
+    subgraph Scheduler [APScheduler]
+        S1[Sunday 7pm — Weekly P&L]
+        S2[Day 60 + Day 90 — Credit Score]
+        S3[Daily reminder if no log 2+ days]
     end
+    Scheduler --> M
+    Scheduler --> N
+    Scheduler --> TW
 ```
 
 ---
 
-### 2.2 AI Processing Flow (Detail)
+### 2.2 Message Processing Flow (Detail)
 
 ```mermaid
 sequenceDiagram
-    participant U as Business Owner (WhatsApp)
-    participant WA as Meta WhatsApp API
-    participant API as Backend Server
-    participant Q as Job Queue (Redis)
-    participant W as AI Worker
-    participant Whisper as OpenAI Whisper
-    participant GPT as OpenAI GPT-4o
-    participant PG as PostgreSQL
+    participant K as Kwaku (WhatsApp)
+    participant TW as Twilio Sandbox
+    participant API as FastAPI Backend
+    participant CL as Claude Haiku
+    participant DB as SQLite
 
-    U->>WA: Sends voice note "I sold 3 bags of rice at 5 dollars each"
-    WA->>API: POST /webhook (audio message event)
-    API->>WA: HTTP 200 OK (acknowledge quickly)
-    API->>Q: Enqueue transcription job
-
-    Q->>W: Pick up job
-    W->>WA: Download OGG audio via media URL
-    W->>Whisper: Transcribe audio (multilingual)
-    Whisper-->>W: "I sold 3 bags of rice at 5 dollars each"
-
-    W->>GPT: Extract entities (function calling)
-    GPT-->>W: {action:"sale", items:[{name:"rice", qty:3, unit:"bag", unit_price:5}]}
-
-    W->>PG: SELECT product WHERE name ~ 'rice' (fuzzy match)
-    PG-->>W: product_id = 42, name = "Rice (50kg bag)"
-
-    W->>PG: INSERT inventory_log (product_id=42, qty=3, price=5, action="sale")
-    W->>GPT: Generate confirmation message (locale-aware)
-    GPT-->>W: "Got it! Recorded sale: 3 bags of Rice at $5.00 each. Total: $15.00"
-
-    W->>WA: Send WhatsApp reply to user
-    WA->>U: "Got it! Recorded sale: 3 bags of Rice at $5.00 each. Total: $15.00"
+    K->>TW: "Sales today 340 cedis, 4 pairs sold"
+    TW->>API: POST /webhook/whatsapp
+    API->>API: Verify Twilio signature
+    API->>API: Look up owner by phone number
+    API->>CL: Parse message (intent classifier prompt)
+    CL-->>API: {intent:"sale", amount_ghs:340, units:4, confidence:0.97, original_language:"en"}
+    API->>DB: INSERT transactions (type=sale, amount=34000 pesewas, units=4)
+    API->>CL: Generate confirmation (Claude Haiku)
+    CL-->>API: "Sales logged: GHS 340 ✓ — This week so far: GHS 1,240"
+    API->>TW: Send WhatsApp reply
+    TW->>K: "Sales logged: GHS 340 ✓ — This week so far: GHS 1,240"
 ```
 
 ---
@@ -187,36 +174,27 @@ sequenceDiagram
 
 ```mermaid
 graph LR
-    subgraph Meta Infrastructure
-        WA_API[WhatsApp\nCloud API]
+    subgraph Twilio Infrastructure
+        TW[Twilio WhatsApp\nSandbox]
     end
-
-    subgraph App Hosting - Railway / GCP Cloud Run
-        API[Backend API\nFastAPI / Fastify]
-        Worker[AI Worker\nBackground Process]
+    subgraph Fly.io
+        API[FastAPI Backend]
+        SCH[APScheduler\nCron Jobs]
     end
-
-    subgraph Managed Services
-        Redis[(Redis\nUpstash / ElastiCache)]
-        PG[(PostgreSQL\nSupabase / RDS)]
-        S3[(Object Storage\nS3 / R2)]
+    subgraph Data Layer
+        DB[(SQLite\nowners · transactions\nfinancial_profiles)]
     end
-
-    subgraph OpenAI Platform
-        Whisper_API[Whisper API]
-        GPT_API[GPT-4o API]
+    subgraph Anthropic Platform
+        HAIKU[Claude Haiku\nIntent parsing]
+        SONNET[Claude Sonnet\nSummaries · Profiles]
     end
-
-    WA_API -->|webhook POST| API
-    API -->|enqueue| Redis
-    Redis -->|dequeue| Worker
-    Worker -->|transcribe| Whisper_API
-    Worker -->|extract + confirm| GPT_API
-    Worker -->|read/write| PG
-    Worker -->|store raw audio| S3
-    API -->|session cache| Redis
-    API -->|send reply| WA_API
-    Worker -->|send reply| WA_API
+    TW -->|webhook POST| API
+    API -->|send reply| TW
+    API -->|read/write| DB
+    SCH -->|weekly P&L · credit score| SONNET
+    SCH -->|send scheduled messages| TW
+    API -->|parse intent| HAIKU
+    API -->|generate summaries| SONNET
 ```
 
 ---
@@ -227,11 +205,11 @@ graph LR
 
 | # | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|---|
-| R1 | **WhatsApp API policy change** — Meta can revoke access, change pricing, or restrict usage categories | Medium | Critical | Abstract WA layer behind an interface; monitor Meta changelog; evaluate Telegram/SMS fallback |
-| R2 | **Whisper transcription accuracy on accented/local languages** (Pidgin, Swahili, Wolof) | High | High | Fine-tune or use `large-v3` model; collect user corrections as training data; allow text fallback |
-| R3 | **GPT-4o hallucination on price/quantity extraction** | Medium | High | Require confidence threshold; always ask user confirmation before writing to DB; log all transcripts |
-| R4 | **Meta Cloud API 24-hour messaging window** — Bots can only reply freely within 24h of last user message | High | Medium | Use approved template messages for proactive alerts; educate users to initiate sessions |
-| R5 | **OpenAI API latency / outage** | Low | High | Implement job retry logic + exponential backoff; consider local Whisper deployment for STT fallback |
+| R1 | **Twilio sandbox limitations** — sandbox restricts to pre-approved recipient numbers; not suitable for real users | High | High | Sandbox for development only. Migrate to Meta Cloud API before onboarding real users. Abstract Twilio behind a `whatsapp_client.py` interface so the swap is one file change. |
+| R2 | **Claude parsing errors on mixed Twi/English** — unusual phrasing, informal numbers ("5k", "small money") | Medium | High | Confidence threshold < 0.7 triggers clarifying question. Log all raw messages. Run Twi test cases before shipping. |
+| R3 | **Owner logging dropout** — 60–90 day retention is the entire business model | High | Critical | Weekly P&L summary as intermediate reward. Day 30 milestone message. Direct reminder if no log for 2+ days. Credit readiness score as progress indicator. |
+| R4 | **Meta Cloud API migration complexity** — moving from Twilio sandbox to Meta direct before real users | Medium | Medium | Keep Twilio logic in a single `whatsapp_client.py` wrapper. Swap implementation without touching handlers. |
+| R5 | **Anthropic API latency or outage** | Low | High | Retry with exponential backoff (max 3 attempts). If all retries fail, reply: "I'm having trouble right now — please try again in a moment." Log failed messages for manual review. |
 
 ---
 
@@ -239,31 +217,28 @@ graph LR
 
 | # | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|---|
-| R6 | **Noisy background audio** — market environments cause poor transcription | High | Medium | Pre-process audio (noise reduction via `ffmpeg`); prompt users to record in quieter conditions |
-| R7 | **Multi-item voice messages** — user lists 10+ products in one message | Medium | Medium | Design extraction to return an array; paginate confirmation UI; limit to 10 items per message |
-| R8 | **Product disambiguation** — "rice" could be multiple SKUs | High | Medium | Fuzzy match top-3 candidates; present numbered choice list in WhatsApp; cache user preferences |
-| R9 | **Data loss on worker crash mid-write** | Low | High | Use DB transactions; idempotency keys per `wa_message_id`; at-least-once job processing |
-| R10 | **User data privacy / GDPR compliance** | Medium | High | Encrypt PII at rest; auto-delete raw audio after 90 days; publish data usage policy |
+| R6 | **Twilio webhook 15-second timeout** — Claude API call must complete before timeout | Medium | Medium | Claude Haiku parse calls complete in ~1–2 seconds. If approaching timeout, acknowledge first and send result as follow-up message. |
+| R7 | **SQLite concurrency limits** — not suitable for multiple simultaneous users | Medium | Medium | SQLite is sufficient for MVP (< 50 users). Migrate to PostgreSQL via SQLAlchemy config change before scaling. |
+| R8 | **Amount normalisation edge cases** — "340", "340 cedis", "₵340", "3hundred forty" | High | Medium | Explicit normalisation examples in Claude prompt. All amounts validated before DB write. Outliers (> GHS 50,000 single transaction) flagged for confirmation. |
+| R9 | **Data loss on crash mid-write** | Low | High | SQLAlchemy transactions — all-or-nothing writes. Idempotency on `wa_message_id` — duplicate messages safe to re-process. |
+| R10 | **Owner trust / data sharing hesitancy** | High | Medium | WhatsApp is already trusted channel. Onboarding message is explicit about what is stored and why. No data shared with lenders without owner confirmation. |
 
 ---
 
 ### 3.3 Constraints
 
 #### Technical Constraints
-
-- **WhatsApp media expiry:** Voice note download URLs expire in ~10 minutes — audio must be downloaded immediately upon webhook receipt, before queuing AI processing.
-- **Meta webhook 15-second timeout:** The webhook endpoint must respond with `200 OK` instantly; all heavy processing must be asynchronous.
-- **OpenAI token limits:** Long transcripts (>10 min voice notes) may exceed context; chunk if needed.
-- **WhatsApp message size:** Replies are limited to 4096 characters; long inventory summaries must be paginated.
-- **Rate limits:** Meta Cloud API has per-phone-number throughput limits (~80 messages/sec); OpenAI Whisper API has concurrent request limits per tier.
+- **Twilio sandbox:** Limited to a pre-approved list of WhatsApp numbers during development. Onboarding real users requires migration to Meta Cloud API production environment.
+- **Twilio webhook timeout:** POST /webhook must return 200 OK quickly. Claude API calls are fast enough on Haiku but monitor p95 latency in production.
+- **SQLite single-writer:** Not suitable beyond ~50 concurrent users. Migration path to PostgreSQL is built in via SQLAlchemy ORM — same codebase, one config change.
+- **WhatsApp message size:** Replies limited to 4,096 characters. P&L summaries must be concise. Lender profiles delivered as structured text, not attachments, in v1.
+- **Fly.io free tier:** 3 shared CPUs, 256MB RAM. Sufficient for MVP. Upgrade before > 100 active users.
 
 #### Business / Operational Constraints
-
-- **Low-bandwidth users:** Target markets often have limited connectivity; voice messages may fail to send on 2G — provide text fallback path.
-- **Multilingual requirement:** Business owners may speak French, English, Arabic, Swahili, Pidgin — the system must be language-agnostic by design.
-- **No smartphone assumption:** Some users use WhatsApp on basic Android devices; no assumptions about camera, location, or file sharing capabilities beyond voice/text.
-- **Variable pricing formats:** "$5", "5 dollars", "cinq mille FCFA", "5k" must all be normalized — currency and unit normalization is an explicit AI task.
-- **Offline resilience:** Owners work in markets with intermittent connectivity — design for eventual consistency; queue messages for retry on reconnect.
+- **Twi + English from day 1:** Kwaku and most container shop operators in Osu, Makola, and Circle write in a mix of both. Claude handles this natively — no separate translation layer.
+- **Amount formats:** "340 cedis", "₵340", "340 GHS", "3hundred forty" must all normalise to the same value. Explicit Claude prompt examples cover the most common variants.
+- **No smartphone assumptions beyond WhatsApp:** Some users are on basic Android devices. Text-only for v1 is the right constraint — voice adds hardware and network dependency.
+- **60–90 day retention is the product:** The financial record only becomes valuable at 60+ days. Every product decision should be evaluated against: does this help an owner log consistently for 90 days?
 
 ---
 
@@ -272,17 +247,14 @@ graph LR
 ```mermaid
 graph TD
     Core[Core Product\nFunctionality]
-
-    Core --> D1[Meta WhatsApp\nBusiness API approval]
-    Core --> D2[OpenAI API\naccount + billing]
-    Core --> D3[Hosted PostgreSQL]
-    Core --> D4[Redis instance]
-
-    D1 --> E1[Business verification\nby Meta — up to 7 days]
-    D2 --> E2[Rate tier upgrade\nfor production volume]
-    D3 --> E3[Supabase free tier\nor RDS provisioning]
+    Core --> D1[Twilio WhatsApp\nSandbox account]
+    Core --> D2[Anthropic API\naccount + key]
+    Core --> D3[SQLite on Fly.io\npersistent volume]
+    Core --> D4[Fly.io deployment]
+    D1 --> E1[Migrate to Meta Cloud API\nbefore real users]
+    D2 --> E2[Monitor usage — Haiku is cheap\nbut set spend limits]
+    D3 --> E3[Migrate to PostgreSQL\nbefore > 50 users]
+    D4 --> E4[Upgrade compute tier\nbefore > 100 users]
 ```
 
 ---
-
-> **Next Steps:** Environment setup, WhatsApp Business API sandbox configuration, and proof-of-concept voice transcription pipeline.
