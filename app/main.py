@@ -10,7 +10,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Visbl MVP v1")
+app = FastAPI()
 
 
 @app.on_event("startup")
@@ -35,17 +35,16 @@ async def health():
 async def handle_whatsapp_message(
     Body: str = Form(...), From: str = Form(...), request: Request = None
 ):
-    # from app.router import route_message
-
     from app.database import SessionLocal
     from app.models import Owner
+    from app.router import route_message
 
     db = SessionLocal()
     phone = From.replace("whatsapp:", "")
 
     try:
         reply_text = "reply"
-        # reply_text = route_message(phone=phone, message=Body, db=db)
+        reply_text = route_message(phone=phone, message=Body, db=db)
     except Exception as e:
         logger.error(f"Error routing message from {phone}: {e}")
         reply_text = "Something went wrong — please try again."
