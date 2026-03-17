@@ -1,17 +1,26 @@
 import logging
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, Form, Request, Response
+from fastapi.responses import PlainTextResponse
 from twilio.twiml.messaging_response import MessagingResponse
+
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
+app = FastAPI(title="Visbl MVP v1")
 
 
 @app.get("/")
 async def root():
-    return {"message": "Hello World"}
+    return {"message": "Visbl is running"}
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
 
 @app.post("/message")
