@@ -13,6 +13,14 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Visbl MVP v1")
 
 
+@app.on_event("startup")
+def on_startup():
+    from app.database import init_db
+
+    init_db()
+    logger.info("DB initialised")
+
+
 @app.get("/")
 async def root():
     return {"message": "Visbl is running"}
@@ -24,25 +32,40 @@ async def health():
 
 
 @app.post("/message")
-async def handle_whatsapp_message(Body: str = Form(...)):
-    """Handle incoming WhatsApp messages and reply."""
+async def handle_whatsapp_message(
+    Body: str = Form(...), From: str = Form(...), request: Request = None
+):
+    # from app.router import route_message
+
+    from app.database import SessionLocal
+    from app.models import Owner
+
+    db = SessionLocal()
+    phone = From.replace("whatsapp:", "")
+
+    try:
+        reply_text = "reply"
+        # reply_text = route_message(phone=phone, message=Body, db=db)
+    except Exception as e:
+        logger.error(f"Error routing message from {phone}: {e}")
+        reply_text = "Something went wrong — please try again."
+    finally:
+        db.close()
+
     response = MessagingResponse()
-    msg = response.message(f"You said: {Body}")
-    logger.info(f"message: {msg}")
-    # Chatbot logic goes here
+    response.message(reply_text)
+    logger.info(f"Reply to {phone}: {reply_text}")
     return Response(content=str(response), media_type="application/xml")
 
 
 @app.post("/webhook")
 async def echo_webhook(request: Request):
     data = await request.json()
-
-    print(f"Received webhook: {data}")
-
+    logger.info(f"Received webhook: {data}")
     return {"message": "Webhook received", "data": data}
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
