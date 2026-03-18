@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400" width="600" height="400">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a7a4c;stop-opacity:1"/>
+      <stop offset="100%" style="stop-color:#0d5c36;stop-opacity:1"/>
+    </linearGradient>
+    <linearGradient id="table" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#8B6914;stop-opacity:1"/>
+      <stop offset="100%" style="stop-color:#6B4F12;stop-opacity:1"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="600" height="400" rx="20" fill="url(#bg)"/>
+
+  <!-- Decorative circles -->
+  <circle cx="50" cy="50" r="80" fill="#ffffff" opacity="0.04"/>
+  <circle cx="550" cy="350" r="100" fill="#ffffff" opacity="0.04"/>
+
+  <!-- Table/counter -->
+  <rect x="120" y="240" width="360" height="20" rx="4" fill="url(#table)"/>
+  <rect x="130" y="260" width="340" height="8" rx="2" fill="#5a4210"/>
+
+  <!-- Money stacks on table -->
+  <!-- Left stack -->
+  <rect x="180" y="220" width="50" height="8" rx="2" fill="#2d8f5e" stroke="#1a6b3f" stroke-width="0.5"/>
+  <rect x="178" y="214" width="50" height="8" rx="2" fill="#34a36a" stroke="#1a6b3f" stroke-width="0.5"/>
+  <rect x="181" y="208" width="50" height="8" rx="2" fill="#3cb878" stroke="#1a6b3f" stroke-width="0.5"/>
+
+  <!-- Right stack -->
+  <rect x="370" y="220" width="50" height="8" rx="2" fill="#2d8f5e" stroke="#1a6b3f" stroke-width="0.5"/>
+  <rect x="372" y="214" width="50" height="8" rx="2" fill="#34a36a" stroke="#1a6b3f" stroke-width="0.5"/>
+  <rect x="369" y="208" width="50" height="8" rx="2" fill="#3cb878" stroke="#1a6b3f" stroke-width="0.5"/>
+
+  <!-- Coins -->
+  <circle cx="260" cy="232" r="8" fill="#FFD700" stroke="#DAA520" stroke-width="1"/>
+  <circle cx="275" cy="228" r="8" fill="#FFD700" stroke="#DAA520" stroke-width="1"/>
+  <circle cx="340" cy="230" r="8" fill="#FFD700" stroke="#DAA520" stroke-width="1"/>
+  <circle cx="325" cy="234" r="8" fill="#FFD700" stroke="#DAA520" stroke-width="1"/>
+
+  <!-- MAN (left side) -->
+  <!-- Body -->
+  <rect x="175" y="150" width="70" height="90" rx="8" fill="#2196F3"/>
+  <!-- Collar detail -->
+  <polygon points="210,150 200,165 220,165" fill="#1976D2"/>
+  <!-- Head -->
+  <circle cx="210" cy="125" r="30" fill="#8D5524"/>
+  <!-- Hair -->
+  <ellipse cx="210" cy="108" rx="25" ry="12" fill="#2C1810"/>
+  <!-- Eyes -->
+  <ellipse cx="200" cy="125" rx="3" ry="3.5" fill="#1a1a1a"/>
+  <ellipse cx="220" cy="125" rx="3" ry="3.5" fill="#1a1a1a"/>
+  <!-- Eye whites -->
+  <ellipse cx="200.5" cy="124.5" rx="1" ry="1.2" fill="#ffffff"/>
+  <ellipse cx="220.5" cy="124.5" rx="1" ry="1.2" fill="#ffffff"/>
+  <!-- Smile -->
+  <path d="M200 135 Q210 143 220 135" stroke="#1a1a1a" stroke-width="2" fill="none" stroke-linecap="round"/>
+  <!-- Arms -->
+  <!-- Left arm resting -->
+  <path d="M175 165 Q155 185 165 210 Q170 225 185 228" stroke="#8D5524" stroke-width="12" fill="none" stroke-linecap="round"/>
+  <!-- Right arm counting money -->
+  <path d="M245 165 Q265 180 260 200 Q255 215 250 225" stroke="#8D5524" stroke-width="12" fill="none" stroke-linecap="round"/>
+  <!-- Money in hand -->
+  <rect x="242" y="200" width="35" height="18" rx="2" fill="#3cb878" stroke="#1a6b3f" stroke-width="1"/>
+  <text x="259" y="213" font-size="8" fill="#1a6b3f" text-anchor="middle" font-family="sans-serif" font-weight="bold">GHS</text>
+
+  <!-- WOMAN (right side) -->
+  <!-- Body -->
+  <rect x="345" y="150" width="70" height="90" rx="8" fill="#E91E63"/>
+  <!-- Neckline detail -->
+  <ellipse cx="380" cy="155" rx="15" ry="8" fill="#C2185B"/>
+  <!-- Head -->
+  <circle cx="380" cy="125" r="30" fill="#C68642"/>
+  <!-- Hair/headwrap -->
+  <path d="M352 115 Q355 85 380 82 Q405 85 408 115" fill="#FF9800" stroke="#F57C00" stroke-width="1"/>
+  <path d="M352 115 Q380 108 408 115" fill="#FF9800"/>
+  <!-- Headwrap knot -->
+  <circle cx="400" cy="95" r="6" fill="#F57C00"/>
+  <!-- Eyes -->
+  <ellipse cx="370" cy="125" rx="3" ry="3.5" fill="#1a1a1a"/>
+  <ellipse cx="390" cy="125" rx="3" ry="3.5" fill="#1a1a1a"/>
+  <!-- Eye whites -->
+  <ellipse cx="370.5" cy="124.5" rx="1" ry="1.2" fill="#ffffff"/>
+  <ellipse cx="390.5" cy="124.5" rx="1" ry="1.2" fill="#ffffff"/>
+  <!-- Smile -->
+  <path d="M370 135 Q380 143 390 135" stroke="#1a1a1a" stroke-width="2" fill="none" stroke-linecap="round"/>
+  <!-- Earrings -->
+  <circle cx="352" cy="130" r="3" fill="#FFD700"/>
+  <circle cx="408" cy="130" r="3" fill="#FFD700"/>
+  <!-- Arms -->
+  <!-- Right arm resting -->
+  <path d="M415 165 Q435 185 425 210 Q420 225 405 228" stroke="#C68642" stroke-width="12" fill="none" stroke-linecap="round"/>
+  <!-- Left arm counting money -->
+  <path d="M345 165 Q325 180 330 200 Q335 215 340 225" stroke="#C68642" stroke-width="12" fill="none" stroke-linecap="round"/>
+  <!-- Money in hand -->
+  <rect x="315" y="200" width="35" height="18" rx="2" fill="#3cb878" stroke="#1a6b3f" stroke-width="1"/>
+  <text x="333" y="213" font-size="8" fill="#1a6b3f" text-anchor="middle" font-family="sans-serif" font-weight="bold">GHS</text>
+
+  <!-- Floating money/sparkle elements -->
+  <text x="150" y="100" font-size="20" opacity="0.3" fill="#FFD700">$</text>
+  <text x="450" y="90" font-size="16" opacity="0.3" fill="#FFD700">$</text>
+  <text x="300" y="70" font-size="14" opacity="0.2" fill="#FFD700">$</text>
+
+  <!-- Bottom text area -->
+  <rect x="100" y="300" width="400" height="70" rx="12" fill="#ffffff" opacity="0.15"/>
+  <text x="300" y="330" font-size="22" fill="#ffffff" text-anchor="middle" font-family="sans-serif" font-weight="bold">Track Sales. Build Credit.</text>
+  <text x="300" y="355" font-size="14" fill="#ffffff" text-anchor="middle" font-family="sans-serif" opacity="0.85">Your daily records become your financial future</text>
+</svg>
