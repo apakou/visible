@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 from sqlalchemy.orm import Session
 
@@ -52,8 +52,6 @@ def calculate_score(owner: Owner, db: Session) -> tuple[int, dict]:
     completeness = complete_days / days_logged if days_logged else 0
 
     # 3. Trend: compare last 2 weeks gross profit (30%)
-    from datetime import timedelta
-
     now = datetime.utcnow()
     w1_start, w1_end = now - timedelta(days=14), now - timedelta(days=7)
     w2_start, w2_end = now - timedelta(days=7), now
@@ -87,27 +85,32 @@ def calculate_score(owner: Owner, db: Session) -> tuple[int, dict]:
 def _send_score_reply(phone: str, score: int, breakdown: dict):
     days = breakdown["days_logged"]
     needed = max(0, 60 - days)
+    trend_label = (
+        "📈 improving" if breakdown["trend"] == 1.0
+        else "➡️ steady" if breakdown["trend"] == 0.5
+        else "📉 declining"
+    )
 
     if score >= 65 and days >= 60:
         msg = (
-            f"Your credit readiness score: {score}/100 ✅\n"
-            f"You have logged for {days} days, your records are consistent, and your profit is growing.\n"
-            f"You're ready. We will generate your lender profile now."
+            f"🎉 *Credit Readiness Score: {score}/100* ✅\n\n"
+            f"You've logged for *{days} days* — your records are consistent and your profit is growing.\n\n"
+            f"🏦 *You're ready!* We will generate your lender profile now."
         )
     elif days < 30:
         msg = (
-            f"Your score: {score}/100\n"
-            f"You are {days} days in. Keep logging daily — {needed} more days to go.\n"
-            f"Tip: log your stock arrivals too, not just sales. It strengthens your record."
+            f"📊 *Your Score: {score}/100*\n\n"
+            f"You are *{days} days* in — keep going! You need *{needed} more days* to qualify.\n\n"
+            f"💡 *Tip:* Log your stock arrivals too, not just sales — it strengthens your record."
         )
     else:
         msg = (
-            f"Your score: {score}/100\n"
-            f"You have logged {days} days. Good progress!\n"
-            f"Consistency: {int(breakdown['consistency'] * 100)}% | "
-            f"Complete days: {int(breakdown['completeness'] * 100)}% | "
-            f"Profit trend: {'improving' if breakdown['trend'] == 1.0 else 'steady' if breakdown['trend'] == 0.5 else 'declining'}\n"
-            f"Keep logging daily. I will check again in 2 weeks."
+            f"📊 *Your Score: {score}/100*\n\n"
+            f"You've logged *{days} days* — good progress! 👍\n\n"
+            f"  • Consistency:  {int(breakdown['consistency'] * 100)}%\n"
+            f"  • Complete days: {int(breakdown['completeness'] * 100)}%\n"
+            f"  • Profit trend:  {trend_label}\n\n"
+            f"Keep logging daily. I'll check again in 2 weeks. 🗓️"
         )
     send_whatsapp(phone, msg)
 
@@ -122,7 +125,12 @@ def _save_profile(owner: Owner, score: int, breakdown: dict, db: Session):
     if not profile:
         profile = FinancialProfile(owner_id=owner.id)
         db.add(profile)
-    profile.credit_score = score
+
+    today = date.today()
+    days = breakdown.get("days_since_onboarding") if breakdown.get("days_since_onboarding") else 1
+    profile.period_start = today - timedelta(days=days)
+    profile.period_end = today
+    profile.credit_readiness_score = score
     profile.logging_days = breakdown["days_logged"]
-    profile.last_calculated_at = datetime.utcnow()
+    profile.generated_at = datetime.utcnow()
     db.commit()

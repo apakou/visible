@@ -36,10 +36,11 @@ async def handle_stock_in(owner: Owner, parsed: dict, raw_message: str, db: Sess
     value_ghs = stock_value / 100
     send_whatsapp(
         phone,
-        f"Stock logged ✓\n"
-        f"{quantity}x {product} ({category}) @ GHS {unit_cost / 100:.2f} each\n"
-        f"Stock value added: GHS {value_ghs:,.2f}\n"
-        f"This updates your insurance record.",
+        f"✅ *Stock logged!*\n"
+        f"  • {quantity}x {product} ({category})\n"
+        f"  • GHS {unit_cost / 100:.2f} each\n"
+        f"  • Total added: *GHS {value_ghs:,.2f}*\n\n"
+        f"📋 This updates your insurance record.",
     )
     return {"status": "stock_in_logged", "stock_value_ghs": value_ghs}
 
@@ -88,9 +89,9 @@ async def handle_sale(owner: Owner, parsed: dict, raw_message: str, db: Session)
 
     send_whatsapp(
         phone,
-        f"Sale logged ✓\n"
-        f"{quantity or ''} {product} → GHS {amount_ghs:,.2f}\n"
-        f"This week so far: GHS {week_total:,.2f}",
+        f"💰 *Sale logged!*\n"
+        f"  • {quantity or ''} {product} → *GHS {amount_ghs:,.2f}*\n\n"
+        f"📈 This week's sales: *GHS {week_total:,.2f}*",
     )
     return {"status": "sale_logged", "amount_ghs": amount_ghs}
 
@@ -136,9 +137,9 @@ async def handle_expense(owner: Owner, parsed: dict, raw_message: str, db: Sessi
 
     send_whatsapp(
         phone,
-        f"Expense logged ✓\n"
-        f"{desc} → GHS {amount_ghs:,.2f} ({category})\n"
-        f"This week's costs so far: GHS {week_total:,.2f}",
+        f"💸 *Expense logged!*\n"
+        f"  • {desc} → *GHS {amount_ghs:,.2f}* ({category})\n\n"
+        f"📉 This week's costs: *GHS {week_total:,.2f}*",
     )
     return {"status": "expense_logged", "amount_ghs": amount_ghs, "category": category}
 
@@ -189,15 +190,15 @@ async def handle_cash_count(owner: Owner, parsed: dict, raw_message: str, db: Se
 
     if discrepancy <= threshold or expected == 0:
         msg = (
-            f"Cash count logged: GHS {amount_ghs:,.2f} ✓\n"
-            f"Matches today's expected cash."
+            f"🏦 *Cash count logged: GHS {amount_ghs:,.2f}* ✅\n"
+            f"Matches today's expected cash — great job!"
         )
     else:
         expected_ghs = expected / 100
         msg = (
-            f"Cash count logged: GHS {amount_ghs:,.2f}\n"
-            f"Note: expected around GHS {expected_ghs:,.2f} based on today's sales.\n"
-            f"Check for returns or unreported expenses."
+            f"🏦 *Cash count logged: GHS {amount_ghs:,.2f}*\n\n"
+            f"⚠️ Expected around *GHS {expected_ghs:,.2f}* based on today's sales.\n"
+            f"Please check for returns or unreported expenses."
         )
 
     send_whatsapp(phone, msg)
