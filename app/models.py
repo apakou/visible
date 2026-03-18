@@ -1,4 +1,5 @@
 from sqlalchemy import (
+    TIMESTAMP,
     Boolean,
     Column,
     Date,
