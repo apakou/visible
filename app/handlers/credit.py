@@ -1,9 +1,13 @@
-from datetime import datetime
+import json
+import logging
+from datetime import datetime, timedelta
 
 from sqlalchemy.orm import Session
 
 from app.models import FinancialProfile, InventoryLog, Owner
 from app.twilio_client import send_whatsapp
+
+logger = logging.getLogger(__name__)
 
 
 async def handle(owner: Owner, parsed: dict, raw_message: str, db: Session):
@@ -52,8 +56,6 @@ def calculate_score(owner: Owner, db: Session) -> tuple[int, dict]:
     completeness = complete_days / days_logged if days_logged else 0
 
     # 3. Trend: compare last 2 weeks gross profit (30%)
-    from datetime import timedelta
-
     now = datetime.utcnow()
     w1_start, w1_end = now - timedelta(days=14), now - timedelta(days=7)
     w2_start, w2_end = now - timedelta(days=7), now
@@ -113,16 +115,69 @@ def _send_score_reply(phone: str, score: int, breakdown: dict):
 
 
 def _save_profile(owner: Owner, score: int, breakdown: dict, db: Session):
-    """Upsert the financial_profiles record with the latest score."""
-    from app.models import FinancialProfile
+    """Persist a valid financial profile row using the current table schema."""
+    period_end = datetime.utcnow().date()
+    period_start = period_end - timedelta(days=29)
+
+    period_logs = (
+        db.query(InventoryLog)
+        .filter(
+            InventoryLog.owner_id == owner.id,
+            InventoryLog.logged_at >= datetime.combine(period_start, datetime.min.time()),
+            InventoryLog.logged_at <= datetime.combine(period_end, datetime.max.time()),
+        )
+        .all()
+    )
+    revenue = sum(
+        (l.stock_value_pesewas or 0) for l in period_logs if l.entry_type == "sale"
+    )
+    expenses = sum(
+        (l.stock_value_pesewas or 0) for l in period_logs if l.entry_type == "expense"
+    )
+    days_logged = len(set(l.logged_at.date() for l in period_logs))
 
     profile = (
-        db.query(FinancialProfile).filter(FinancialProfile.owner_id == owner.id).first()
+        db.query(FinancialProfile)
+        .filter(
+            FinancialProfile.owner_id == owner.id,
+            FinancialProfile.period_start == period_start,
+            FinancialProfile.period_end == period_end,
+        )
+        .first()
     )
     if not profile:
-        profile = FinancialProfile(owner_id=owner.id)
+        profile = FinancialProfile(
+            owner_id=owner.id,
+            period_start=period_start,
+            period_end=period_end,
+        )
         db.add(profile)
-    profile.credit_score = score
-    profile.logging_days = breakdown["days_logged"]
-    profile.last_calculated_at = datetime.utcnow()
-    db.commit()
+
+    profile.total_revenue_pesewas = revenue
+    profile.total_expenses_pesewas = expenses
+    profile.gross_profit_pesewas = revenue - expenses
+    profile.transaction_count = len(period_logs)
+    profile.days_logged = days_logged
+    profile.consistency_score = breakdown.get("consistency", 0)
+    profile.credit_readiness_score = score / 100
+    profile.summary_text_en = (
+        f"Credit readiness score: {score}/100. "
+        f"Consistency: {int((breakdown.get('consistency', 0) or 0) * 100)}%."
+    )
+    profile.lender_profile_json = json.dumps(
+        {
+            "score": score,
+            "breakdown": breakdown,
+            "generated_at": datetime.utcnow().isoformat(),
+        }
+    )
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "Failed saving financial profile",
+            extra={"owner_id": owner.id, "period_start": str(period_start)},
+        )
+        raise

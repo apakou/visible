@@ -1,4 +1,5 @@
 import logging
+import re
 
 from fastapi import APIRouter, Depends, Form
 from sqlalchemy.exc import SQLAlchemyError
@@ -8,10 +9,89 @@ from app.database import get_db
 from app.handlers import claim, credit, inventory, onboarding, policy, summary
 from app.models import Owner
 from app.openrouter_client import classify_intent
-from app.twilio_client import send_whatsapp
+from app.twilio_client import send_whatsapp, send_whatsapp_menu
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _menu_text(language_pref: str = "en") -> str:
+    if (language_pref or "en").lower() == "tw":
+        return (
+            "Paw baako (fa namba no to me):\n"
+            "1. Log sale\n"
+            "2. Log expense\n"
+            "3. Log stock in\n"
+            "4. Log cash count\n"
+            "5. Insurance status\n"
+            "6. Weekly summary\n"
+            "7. Credit score"
+        )
+    return (
+        "Choose one option (reply with a number):\n"
+        "1. Log sale\n"
+        "2. Log expense\n"
+        "3. Log stock in\n"
+        "4. Log cash count\n"
+        "5. Insurance status\n"
+        "6. Weekly summary\n"
+        "7. Credit score"
+    )
+
+
+def _parse_menu_choice(message: str) -> str | None:
+    normalized = (message or "").strip().lower()
+    normalized = re.sub(r"\s+", " ", normalized)
+
+    direct = {
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "option 1",
+        "option 2",
+        "option 3",
+        "option 4",
+        "option 5",
+        "option 6",
+        "option 7",
+    }
+    if normalized in direct:
+        return normalized[-1]
+
+    return None
+
+
+async def _handle_menu_choice(choice: str, owner: Owner, db: Session):
+    phone = owner.phone_number
+
+    if choice == "1":
+        send_whatsapp(phone, "Great. Send your sale like: 'sales 340 cedis'")
+        return {"status": "menu_choice_sale"}
+    if choice == "2":
+        send_whatsapp(phone, "Good. Send your expense like: 'paid 50 cedis transport'")
+        return {"status": "menu_choice_expense"}
+    if choice == "3":
+        send_whatsapp(
+            phone,
+            "Perfect. Send stock-in like: 'received 20 shirts at GHS 15 each'",
+        )
+        return {"status": "menu_choice_stock_in"}
+    if choice == "4":
+        send_whatsapp(phone, "Okay. Send cash count like: 'till 280 cedis'")
+        return {"status": "menu_choice_cash_count"}
+    if choice == "5":
+        return await policy.handle_query(owner, {"intent": "policy_query"}, "", db)
+    if choice == "6":
+        return await summary.handle(owner, {"intent": "summary_request"}, "", db)
+    if choice == "7":
+        return await credit.handle(owner, {"intent": "profile_request"}, "", db)
+
+    send_whatsapp_menu(phone, _menu_text(owner.language_pref or "en"))
+    return {"status": "menu_choice_unknown"}
 
 
 @router.post("/webhook/whatsapp")
@@ -46,6 +126,23 @@ async def whatsapp_webhook(
         send_whatsapp(phone, reply_text)
         return {"status": "onboarding_reply_sent"}
 
+    # Fast path: if user selected from known menu options, execute directly.
+    choice = _parse_menu_choice(message)
+    if choice:
+        logger.info(
+            "Routing numeric menu choice",
+            extra={"phone": phone, "choice": choice},
+        )
+        try:
+            return await _handle_menu_choice(choice, owner, db)
+        except Exception:
+            logger.exception("Error while handling menu choice", extra={"phone": phone})
+            send_whatsapp(
+                phone,
+                "I could not process that option right now. Please try again.",
+            )
+            return {"status": "menu_choice_error"}
+
     # Classify intent
     try:
         parsed = classify_intent(message)
@@ -61,6 +158,15 @@ async def whatsapp_webhook(
         return {"status": "intent_classification_failed"}
 
     intent = parsed.get("intent", "unknown")
+
+    # Prevent help questions from being misrouted to credit profile flow.
+    lowered_message = message.lower()
+    if intent == "profile_request" and re.search(
+        r"\b(how\s+do\s+i|how\s+to|help|guide|record|log|inventory|stock)\b",
+        lowered_message,
+    ):
+        intent = "logging_help"
+
     logger.info(
         "Classified incoming message intent",
         extra={"phone": phone, "intent": intent, "confidence": parsed.get("confidence")},
@@ -75,6 +181,7 @@ async def whatsapp_webhook(
         "claim_initiate": claim.handle_initiate,
         "policy_query": policy.handle_query,
         "profile_request": credit.handle,
+        "logging_help": inventory.handle_logging_help,
     }
 
     handler_fn = dispatch.get(intent)
@@ -105,8 +212,18 @@ async def whatsapp_webhook(
             "Unknown intent from classifier",
             extra={"phone": phone, "intent": intent},
         )
-        send_whatsapp(
-            phone,
-            "Sorry, I did not understand that. Try: 'sold 3 shirts for GHS 90' or 'insurance status'",
-        )
+        if (owner.language_pref or "en").lower() == "tw":
+            fallback_msg = (
+                "Me werɛ aho a kakra, nanso mɛboa wo.\n\n"
+                f"{_menu_text(owner.language_pref or 'en')}\n\n"
+                "Anaa kyerɛw no tee, sɛ: 'sales 340 cedis'."
+            )
+        else:
+            fallback_msg = (
+                "I didn't catch that yet, but I'm here to help.\n\n"
+                f"{_menu_text(owner.language_pref or 'en')}\n\n"
+                "Or type it directly, for example: 'sales 340 cedis'."
+            )
+
+        send_whatsapp_menu(phone, fallback_msg)
         return {"status": "unknown_intent"}

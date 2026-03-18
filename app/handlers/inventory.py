@@ -3,7 +3,25 @@ from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 
 from app.models import InventoryLog, Owner
-from app.twilio_client import send_whatsapp
+from app.twilio_client import send_whatsapp, send_whatsapp_menu
+
+
+async def handle_logging_help(owner: Owner, parsed: dict, raw_message: str, db: Session):
+    """Help text for owners asking how to record inventory and daily activity."""
+    phone = owner.phone_number
+    send_whatsapp_menu(
+        phone,
+        "Choose one option (reply with a number):\n"
+        "1. Log sale\n"
+        "2. Log expense\n"
+        "3. Log stock in\n"
+        "4. Log cash count\n"
+        "5. Insurance status\n"
+        "6. Weekly summary\n"
+        "7. Credit score\n\n"
+        "Or send directly, for example: 'sales 340 cedis'.",
+    )
+    return {"status": "logging_help_sent"}
 
 
 # ─────────────────────────────────────────────────────────────────

@@ -4,7 +4,7 @@ The owner may write in English, Twi, or a mix of both.
 Extract the intent and data from the message. Return ONLY valid JSON. No explanation.
 
 {
-  "intent": "stock_in | sale | expense | cash_count | summary_request | profile_request | claim_initiate | policy_query | unknown",
+  "intent": "stock_in | sale | expense | cash_count | summary_request | profile_request | claim_initiate | policy_query | logging_help | unknown",
   "amount_ghs": <float or null>,
   "quantity": <int or null>,
   "product_name": <string or null>,
@@ -14,6 +14,9 @@ Extract the intent and data from the message. Return ONLY valid JSON. No explana
   "confidence": <float 0.0-1.0>,
   "original_language": "en|tw|mixed"
 }
+
+If the user asks for instructions on how to log/record inventory, sales, expenses, or till cash,
+set intent to "logging_help".
 """
 
 SUMMARY_PROMPT = """

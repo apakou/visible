@@ -67,6 +67,21 @@ def _regex_fallback_intent(message: str) -> dict:
     text = (message or "").strip().lower()
     amount = _extract_amount_ghs(text)
 
+    if re.search(
+        r"\b(how\s+do\s+i|how\s+to|help|guide|show\s+me)\b", text
+    ) and re.search(r"\b(record|log|inventory|stock|sale|expense)\b", text):
+        return {
+            "intent": "logging_help",
+            "amount_ghs": None,
+            "quantity": None,
+            "product_name": None,
+            "product_category": None,
+            "description": message,
+            "event_type": None,
+            "confidence": 0.8,
+            "original_language": "en",
+        }
+
     if re.search(r"\b(stock|received|restock|stock\s*in)\b", text):
         return {
             "intent": "stock_in",

@@ -1,5 +1,6 @@
 import logging
 import os
+import json
 
 from dotenv import load_dotenv
 from twilio.rest import Client
@@ -11,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 client = Client(os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"))
 FROM_NUMBER = os.getenv("TWILIO_WHATSAPP_FROM")
+MENU_CONTENT_SID = os.getenv("TWILIO_MENU_CONTENT_SID")
 
 
 def send_whatsapp(to: str, body: str):
@@ -37,3 +39,37 @@ def send_whatsapp(to: str, body: str):
             extra={"to": to_number, "status": exc.status, "code": exc.code},
         )
         return None
+
+
+def send_whatsapp_menu(to: str, fallback_body: str, variables: dict | None = None):
+    """Send menu using Twilio Content Template buttons when configured.
+
+    If TWILIO_MENU_CONTENT_SID is not set or template send fails, falls back to plain text.
+    """
+    to_number = to if to.startswith("whatsapp:") else f"whatsapp:{to}"
+
+    if not FROM_NUMBER:
+        logger.error("TWILIO_WHATSAPP_FROM is not configured")
+        return None
+
+    if not MENU_CONTENT_SID:
+        return send_whatsapp(to_number, fallback_body)
+
+    try:
+        logger.info(
+            "Sending WhatsApp menu via Twilio content template",
+            extra={"to": to_number, "content_sid": MENU_CONTENT_SID},
+        )
+        message = client.messages.create(
+            from_=FROM_NUMBER,
+            to=to_number,
+            content_sid=MENU_CONTENT_SID,
+            content_variables=json.dumps(variables or {}),
+        )
+        return message.sid
+    except TwilioRestException as exc:
+        logger.exception(
+            "Twilio content template send failed; falling back to text menu",
+            extra={"to": to_number, "status": exc.status, "code": exc.code},
+        )
+        return send_whatsapp(to_number, fallback_body)
