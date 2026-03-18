@@ -1,4 +1,5 @@
 import os
+import logging
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import PlainTextResponse
@@ -9,6 +10,8 @@ from app.insurer_export import export_claims_json, export_declarations_csv
 from app.scheduler import start_scheduler
 from app.webhook import router as webhook_router
 
+logger = logging.getLogger(__name__)
+
 app = FastAPI(title="Visbl MVP v2", version="2.0.0")
 
 app.include_router(webhook_router)
@@ -16,11 +19,13 @@ app.include_router(webhook_router)
 
 @app.on_event("startup")
 async def on_startup():
+    logger.info("Starting scheduler on application startup")
     start_scheduler()
 
 
 @app.get("/health")
 async def health():
+    logger.debug("Health check requested")
     return {"status": "ok", "version": "2.0.0"}
 
 
@@ -31,7 +36,9 @@ async def export_declarations(
     month: str = None, x_api_key: str = Header(None), db: Session = Depends(get_db)
 ):
     if x_api_key != os.getenv("EXPORT_API_KEY"):
+        logger.warning("Forbidden declarations export attempt with invalid API key")
         raise HTTPException(status_code=403, detail="Forbidden")
+    logger.info("Exporting declarations", extra={"month": month})
     return export_declarations_csv(db, month)
 
 
@@ -39,7 +46,9 @@ async def export_declarations(
 @app.get("/export/claims", response_class=PlainTextResponse)
 async def export_claims(x_api_key: str = Header(None), db: Session = Depends(get_db)):
     if x_api_key != os.getenv("EXPORT_API_KEY"):
+        logger.warning("Forbidden claims export attempt with invalid API key")
         raise HTTPException(status_code=403, detail="Forbidden")
+    logger.info("Exporting claims")
     return export_claims_json(db)
 
 
@@ -51,9 +60,13 @@ async def get_owner_policy(
     from app.models import Owner, Policy
 
     if x_api_key != os.getenv("EXPORT_API_KEY"):
+        logger.warning(
+            "Forbidden owner policy lookup with invalid API key", extra={"phone": phone}
+        )
         raise HTTPException(status_code=403, detail="Forbidden")
     owner = db.query(Owner).filter(Owner.phone_number == phone).first()
     if not owner:
+        logger.info("Owner not found for policy lookup", extra={"phone": phone})
         raise HTTPException(status_code=404, detail="Owner not found")
     policy = (
         db.query(Policy)
@@ -61,6 +74,9 @@ async def get_owner_policy(
         .first()
     )
     if not policy:
+        logger.info(
+            "No active policy found for owner", extra={"phone": phone, "owner_id": owner.id}
+        )
         return {"owner": owner.name, "policy": None}
     return {
         "owner": owner.name,

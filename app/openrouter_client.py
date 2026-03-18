@@ -1,10 +1,13 @@
 import json
+import logging
 import os
 
 import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
@@ -36,15 +39,30 @@ def chat(
             {"role": "user", "content": user_message},
         ],
     }
+    logger.info(
+        "Calling OpenRouter chat completion",
+        extra={"model": model, "max_tokens": max_tokens},
+    )
     with httpx.Client(timeout=30) as client:
-        response = client.post(
-            f"{OPENROUTER_BASE_URL}/chat/completions",
-            headers=_headers(),
-            json=payload,
-        )
-        response.raise_for_status()
-        data = response.json()
-        return data["choices"][0]["message"]["content"]
+        try:
+            response = client.post(
+                f"{OPENROUTER_BASE_URL}/chat/completions",
+                headers=_headers(),
+                json=payload,
+            )
+            response.raise_for_status()
+            data = response.json()
+            logger.debug(
+                "Received response from OpenRouter",
+                extra={"model": model},
+            )
+            return data["choices"][0]["message"]["content"]
+        except httpx.HTTPError:
+            logger.exception(
+                "OpenRouter HTTP error",
+                extra={"model": model},
+            )
+            raise
 
 
 def classify_intent(message: str) -> dict:

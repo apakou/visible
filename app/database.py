@@ -1,3 +1,4 @@
+import logging
 import os
 
 from dotenv import load_dotenv
@@ -5,6 +6,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.getenv("DB_URL")
 
@@ -19,7 +22,9 @@ class Base(DeclarativeBase):
 
 def get_db():
     db = SessionLocal()
+    logger.debug("Opened DB session")
     try:
         yield db
     finally:
         db.close()
+        logger.debug("Closed DB session")
