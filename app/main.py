@@ -5,7 +5,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.database import get_db, init_db_if_sqlite
 from app.insurer_export import export_claims_json, export_declarations_csv
 from app.scheduler import start_scheduler
 from app.webhook import router as webhook_router
@@ -19,6 +19,7 @@ app.include_router(webhook_router)
 
 @app.on_event("startup")
 async def on_startup():
+    init_db_if_sqlite()
     logger.info("Starting scheduler on application startup")
     start_scheduler()
 

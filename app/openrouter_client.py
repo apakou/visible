@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 
 import httpx
 from dotenv import load_dotenv
@@ -15,6 +16,146 @@ OPENROUTER_SITE_URL = os.getenv("OPENROUTER_SITE_URL", "")
 OPENROUTER_APP_NAME = os.getenv("OPENROUTER_APP_NAME", "Visbl")
 MODEL_INTENT = os.getenv("MODEL_INTENT", "anthropic/claude-haiku-4-5")
 MODEL_SUMMARY = os.getenv("MODEL_SUMMARY", "anthropic/claude-sonnet-4")
+
+
+def _extract_amount_ghs(message: str):
+    """Best-effort parser for amounts like '340', 'GHS 340', '340 cedis'."""
+    m = re.search(
+        r"(?:ghs|cedis|cedi|\u20b5)?\s*([0-9]+(?:[\.,][0-9]{1,2})?)\s*(?:ghs|cedis|cedi)?",
+        message,
+        flags=re.IGNORECASE,
+    )
+    if not m:
+        return None
+    value = m.group(1).replace(",", "")
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def _coerce_json_object(raw: str) -> dict:
+    """Parse model output even when wrapped in markdown fences or prefixed text."""
+    text = (raw or "").strip()
+    if not text:
+        return {}
+
+    # Strip ```json ... ``` wrappers if present.
+    fenced = re.search(r"```(?:json)?\s*(\{[\s\S]*\})\s*```", text, flags=re.IGNORECASE)
+    if fenced:
+        text = fenced.group(1).strip()
+
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError:
+        # Fallback: grab the first JSON-like object in the response.
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            candidate = text[start : end + 1]
+            try:
+                parsed = json.loads(candidate)
+                return parsed if isinstance(parsed, dict) else {}
+            except json.JSONDecodeError:
+                return {}
+        return {}
+
+
+def _regex_fallback_intent(message: str) -> dict:
+    """Deterministic fallback for common WhatsApp command styles."""
+    text = (message or "").strip().lower()
+    amount = _extract_amount_ghs(text)
+
+    if re.search(r"\b(stock|received|restock|stock\s*in)\b", text):
+        return {
+            "intent": "stock_in",
+            "amount_ghs": amount,
+            "quantity": None,
+            "product_name": None,
+            "product_category": None,
+            "description": message,
+            "event_type": None,
+            "confidence": 0.72,
+            "original_language": "en",
+        }
+
+    if re.search(r"\b(sale|sales|sold)\b", text):
+        return {
+            "intent": "sale",
+            "amount_ghs": amount,
+            "quantity": None,
+            "product_name": None,
+            "product_category": None,
+            "description": message,
+            "event_type": None,
+            "confidence": 0.78,
+            "original_language": "en",
+        }
+
+    if re.search(r"\b(expense|paid|pay|cost|spent|spend)\b", text):
+        return {
+            "intent": "expense",
+            "amount_ghs": amount,
+            "quantity": None,
+            "product_name": None,
+            "product_category": None,
+            "description": message,
+            "event_type": None,
+            "confidence": 0.76,
+            "original_language": "en",
+        }
+
+    if re.search(r"\b(till|cash\s*count|cash\s*in\s*hand|drawer)\b", text):
+        return {
+            "intent": "cash_count",
+            "amount_ghs": amount,
+            "quantity": None,
+            "product_name": None,
+            "product_category": None,
+            "description": message,
+            "event_type": None,
+            "confidence": 0.75,
+            "original_language": "en",
+        }
+
+    if re.search(r"\b(summary|report|profit|p&l)\b", text):
+        return {
+            "intent": "summary_request",
+            "amount_ghs": None,
+            "quantity": None,
+            "product_name": None,
+            "product_category": None,
+            "description": message,
+            "event_type": None,
+            "confidence": 0.74,
+            "original_language": "en",
+        }
+
+    if re.search(r"\b(policy|insurance|cover|status)\b", text):
+        return {
+            "intent": "policy_query",
+            "amount_ghs": None,
+            "quantity": None,
+            "product_name": None,
+            "product_category": None,
+            "description": message,
+            "event_type": None,
+            "confidence": 0.74,
+            "original_language": "en",
+        }
+
+    return {
+        "intent": "unknown",
+        "amount_ghs": amount,
+        "quantity": None,
+        "product_name": None,
+        "product_category": None,
+        "description": message,
+        "event_type": None,
+        "confidence": 0.0,
+        "original_language": "en",
+    }
 
 
 def _headers():
@@ -70,10 +211,14 @@ def classify_intent(message: str) -> dict:
     from app.prompts import INTENT_CLASSIFIER_PROMPT
 
     raw = chat(INTENT_CLASSIFIER_PROMPT, message, model=MODEL_INTENT)
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return {"intent": "unknown", "confidence": 0.0}
+    parsed = _coerce_json_object(raw)
+    intent = parsed.get("intent") if isinstance(parsed, dict) else None
+
+    if intent:
+        return parsed
+
+    logger.warning("Classifier returned unparseable/empty JSON; using regex fallback")
+    return _regex_fallback_intent(message)
 
 
 def generate_summary(owner_data: dict, period: str = "weekly") -> str:

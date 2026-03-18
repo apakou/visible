@@ -1,10 +1,11 @@
 import logging
 
 from fastapi import APIRouter, Depends, Form
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app import handlers
 from app.database import get_db
+from app.handlers import claim, credit, inventory, onboarding, policy, summary
 from app.models import Owner
 from app.openrouter_client import classify_intent
 from app.twilio_client import send_whatsapp
@@ -26,17 +27,39 @@ async def whatsapp_webhook(
     )
 
     # Check if owner exists
-    owner = db.query(Owner).filter(Owner.phone_number == phone).first()
+    try:
+        owner = db.query(Owner).filter(Owner.phone_number == phone).first()
+    except SQLAlchemyError:
+        logger.exception("Database error while loading owner", extra={"phone": phone})
+        send_whatsapp(
+            phone,
+            "Service is temporarily unavailable. Please try again in a few minutes.",
+        )
+        return {"status": "db_unavailable"}
 
     if not owner or not owner.onboarded_at:
         logger.info(
             "Routing message to onboarding handler",
             extra={"phone": phone, "has_owner": bool(owner)},
         )
-        return await handlers.onboarding.handle(phone, message, db)
+        reply_text = onboarding.handle_onboarding(phone, message, db)
+        send_whatsapp(phone, reply_text)
+        return {"status": "onboarding_reply_sent"}
 
     # Classify intent
-    parsed = classify_intent(message)
+    try:
+        parsed = classify_intent(message)
+    except Exception:
+        logger.exception(
+            "Intent classification failed",
+            extra={"phone": phone},
+        )
+        send_whatsapp(
+            phone,
+            "Service is temporarily unavailable. Please try again in a few minutes.",
+        )
+        return {"status": "intent_classification_failed"}
+
     intent = parsed.get("intent", "unknown")
     logger.info(
         "Classified incoming message intent",
@@ -44,14 +67,14 @@ async def whatsapp_webhook(
     )
 
     dispatch = {
-        "stock_in": handlers.inventory.handle_stock_in,
-        "sale": handlers.inventory.handle_sale,
-        "expense": handlers.inventory.handle_expense,
-        "cash_count": handlers.inventory.handle_cash_count,
-        "summary_request": handlers.summary.handle,
-        "claim_initiate": handlers.claim.handle_initiate,
-        "policy_query": handlers.policy.handle_query,
-        "profile_request": handlers.credit.handle,
+        "stock_in": inventory.handle_stock_in,
+        "sale": inventory.handle_sale,
+        "expense": inventory.handle_expense,
+        "cash_count": inventory.handle_cash_count,
+        "summary_request": summary.handle,
+        "claim_initiate": claim.handle_initiate,
+        "policy_query": policy.handle_query,
+        "profile_request": credit.handle,
     }
 
     handler_fn = dispatch.get(intent)
