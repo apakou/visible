@@ -123,7 +123,8 @@ async def whatsapp_webhook(
             extra={"phone": phone, "has_owner": bool(owner)},
         )
         reply_text = onboarding.handle_onboarding(phone, message, db)
-        send_whatsapp(phone, reply_text)
+        if reply_text:
+            send_whatsapp(phone, reply_text)
         return {"status": "onboarding_reply_sent"}
 
     # Fast path: if user selected from known menu options, execute directly.

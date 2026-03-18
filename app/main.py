@@ -1,8 +1,10 @@
 import os
 import logging
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from app.database import get_db, init_db_if_sqlite
@@ -13,6 +15,11 @@ from app.webhook import router as webhook_router
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Visbl MVP v2", version="2.0.0")
+
+# Serve static assets (images, etc.) at /static
+_static_dir = Path(__file__).resolve().parent / "static"
+if _static_dir.is_dir():
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
 app.include_router(webhook_router)
 
