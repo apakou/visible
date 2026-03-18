@@ -1,6 +1,8 @@
 import json
 import logging
 import os
+import threading
+import time
 
 import httpx
 from dotenv import load_dotenv
@@ -15,6 +17,18 @@ OPENROUTER_SITE_URL = os.getenv("OPENROUTER_SITE_URL", "")
 OPENROUTER_APP_NAME = os.getenv("OPENROUTER_APP_NAME", "Visbl")
 MODEL_INTENT = os.getenv("MODEL_INTENT", "anthropic/claude-haiku-4-5")
 MODEL_SUMMARY = os.getenv("MODEL_SUMMARY", "anthropic/claude-sonnet-4")
+IMAGE_GENERATION_MODEL = os.getenv("IMAGE_GENERATION_MODEL", "openai/dall-e-3")
+
+ONBOARDING_IMAGE_PROMPT = (
+    "Two African market traders — a man and a woman — sitting together at a colourful "
+    "market stall, happily counting paper money (Ghana cedis). Vibrant, warm colours, "
+    "photorealistic style, optimistic and successful mood, clean composition, high quality."
+)
+
+# Module-level cache for the generated image URL (DALL-E URLs expire after ~1 hour)
+_cached_image_url: str | None = None
+_cached_image_expiry: float = 0.0
+_image_cache_lock = threading.Lock()
 
 
 def _headers():
@@ -100,3 +114,56 @@ def generate_declaration(
         max_tokens=800,
     )
     return {"en": result_en, "tw": result_tw}
+
+
+def generate_image(prompt: str, model: str = None) -> str:
+    """Generate an image via OpenRouter and return the URL."""
+    model = model or IMAGE_GENERATION_MODEL
+    payload = {"model": model, "prompt": prompt, "n": 1, "size": "1024x1024"}
+    logger.info("Generating image via OpenRouter", extra={"model": model})
+    with httpx.Client(timeout=60) as http:
+        response = http.post(
+            f"{OPENROUTER_BASE_URL}/images/generations",
+            headers=_headers(),
+            json=payload,
+        )
+        response.raise_for_status()
+        data = response.json()
+        url = data["data"][0]["url"]
+        logger.info("Image generated successfully", extra={"model": model})
+        return url
+
+
+def get_onboarding_image_url() -> str | None:
+    """Return the onboarding welcome image URL.
+
+    Priority:
+    1. ``ONBOARDING_IMAGE_URL`` env var (static, pre-generated URL).
+    2. Cached in-memory URL (refreshed every 50 minutes because DALL-E
+       temporary URLs expire after ~1 hour).
+    3. Freshly generated via the image API; failures are swallowed so that
+       a missing image never blocks the onboarding flow.
+
+    Thread-safe: cache reads and writes are protected by ``_image_cache_lock``.
+    """
+    global _cached_image_url, _cached_image_expiry
+
+    # Static override — useful for production where the image is pre-hosted.
+    static_url = os.getenv("ONBOARDING_IMAGE_URL")
+    if static_url:
+        return static_url
+
+    with _image_cache_lock:
+        # Re-check inside the lock to avoid duplicate generation.
+        if _cached_image_url and time.time() < _cached_image_expiry:
+            return _cached_image_url
+
+        # Generate a new image and cache it for 50 minutes.
+        try:
+            url = generate_image(ONBOARDING_IMAGE_PROMPT)
+            _cached_image_url = url
+            _cached_image_expiry = time.time() + 50 * 60
+            return _cached_image_url
+        except Exception:
+            logger.exception("Failed to generate onboarding image; proceeding without it")
+            return None
