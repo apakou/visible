@@ -74,7 +74,8 @@ async def whatsapp_webhook(
             )
             send_whatsapp(
                 phone,
-                "Sorry, something went wrong while processing your message. Please try again.",
+                "⚠️ Something went wrong while processing your message.\n"
+                "Please try again in a moment — if the problem continues, contact support.",
             )
             return {"status": "error"}
     else:
@@ -82,8 +83,17 @@ async def whatsapp_webhook(
             "Unknown intent from classifier",
             extra={"phone": phone, "intent": intent},
         )
+        name = owner.name or "there"
         send_whatsapp(
             phone,
-            "Sorry, I did not understand that. Try: 'sold 3 shirts for GHS 90' or 'insurance status'",
+            f"🤔 Hey {name}, I didn't quite catch that.\n\n"
+            "Here's what I can help you with:\n\n"
+            "💰 *Log a sale* — `Sold 3 shirts for GHS 90`\n"
+            "💸 *Log an expense* — `Paid GHS 50 for transport`\n"
+            "📦 *Log stock* — `Received 20 polos at GHS 15 each`\n"
+            "🏦 *Till count* — `Till 280 cedis`\n"
+            "📊 *My score* — `What is my credit score?`\n"
+            "🛡️ *Insurance* — `Insurance status`\n\n"
+            "Just type your message and I'll figure it out! 😊",
         )
         return {"status": "unknown_intent"}
