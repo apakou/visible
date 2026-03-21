@@ -1,4 +1,4 @@
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, Form
 from sqlalchemy.orm import Session
 from twilio.twiml.messaging_response import MessagingResponse
 
@@ -25,16 +25,24 @@ async def root(db: Session = Depends(get_db)):
 
 
 @app.post("/webhook/whatsapp")
-async def whatsapp_webhook(request: Request):
-    form = await request.form()
-    incoming_msg_body = form.get("Body", "").strip()
-    sender_phone_number = form.get("From", "")
+async def whatsapp_webhook(
+    From: str = Form(...),
+    Body: str = Form(...),
+    MediaUrl0: str = Form(None),
+):
+    response = MessagingResponse()
 
-    resp = MessagingResponse()
-    if incoming_msg_body.lower() == "hello":
-        resp.message("Hi! You sent: " + incoming_msg_body)
+    # 2. Logic: Identify the Trader
+    # (Here you would check your 'owners' table for the phone number)
+
+    # 3. Logic: Handle the Input
+    if MediaUrl0:
+        reply = "I see your photo! Let me analyze your stock..."
+        # TODO: Trigger Step 3 (Claude Vision Parser)
     else:
-        resp.message("We received your message: " + incoming_msg_body)
+        reply = f"Received your message: '{Body}'. Processing..."
+        # TODO: Trigger AI Agent Intent Classifier
 
-    # Twilio expects TwiML (XML) in response
-    return str(resp)
+    # 4. Send the reply back to WhatsApp
+    response.message(reply)
+    return str(response)
