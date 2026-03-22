@@ -200,6 +200,7 @@ def send_reply_buttons(
     body_text: str,
     buttons: list[dict],
     header_text: str = None,
+    header_image_url: str = None,
     footer_text: str = None,
 ) -> dict:
     """
@@ -247,8 +248,12 @@ def send_reply_buttons(
         "body": {"text": body_text},
         "action": {"buttons": formatted_buttons},
     }
-    if header_text:
+
+    if header_image_url:
+        interactive["header"] = {"type": "image", "image": {"link": header_image_url}}
+    elif header_text:
         interactive["header"] = {"type": "text", "text": header_text}
+
     if footer_text:
         interactive["footer"] = {"text": footer_text}
 
@@ -468,6 +473,7 @@ def send_whatsapp_flow(
     screen: str = None,
     prefill_data: dict = None,
     header_text: str = None,
+    header_image_url: str = None,
     footer_text: str = None,
     mode: str = "published",
 ) -> dict:
@@ -523,8 +529,11 @@ def send_whatsapp_flow(
             "parameters": flow_params,
         },
     }
-    if header_text:
+    if header_image_url:
+        interactive["header"] = {"type": "image", "image": {"link": header_image_url}}
+    elif header_text:
         interactive["header"] = {"type": "text", "text": header_text}
+
     if footer_text:
         interactive["footer"] = {"text": footer_text}
 
@@ -535,3 +544,65 @@ def send_whatsapp_flow(
         "interactive": interactive,
     }
     return _post(payload)
+
+
+# ─────────────────────────────────────────────
+# TYPING INDICATOR
+# ─────────────────────────────────────────────
+
+
+def send_typing_indicator(to: str, message_id: str) -> dict:
+    """
+    Show a "typing..." animation in the user's WhatsApp chat.
+
+    This does two things in one API call:
+      1. Marks the incoming message as read (blue ticks)
+      2. Shows the typing animation for up to 25 seconds
+
+    The animation disappears automatically when you send your reply,
+    or after 25 seconds — whichever comes first.
+
+    Args:
+        to: User's phone number (e.g. "233501234567")
+        message_id: The 'id' field from the incoming webhook message (starts with "wamid.")
+
+    Usage — call this right after receiving a message, before doing any heavy work:
+        send_typing_indicator(phone, message_id)
+        inventory = await parse_inventory_with_claude(image_b64)  # takes a few seconds
+        await send_reply(...)
+    """
+    logger.debug("send_typing_indicator | to=%s message_id=%s", to, message_id)
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "status": "read",
+        "message_id": message_id,
+        "typing_indicator": {"type": "text"},
+    }
+    url = f"{BASE_URL}/messages"
+
+    try:
+        response = requests.post(url, headers=HEADERS, json=payload)
+
+        if response.status_code == 200:
+            logger.info(
+                "Typing indicator sent | to=%s message_id=%s",
+                to,
+                message_id,
+            )
+        else:
+            error = response.json().get("error", {})
+            logger.warning(
+                "Typing indicator failed | to=%s message_id=%s status=%s code=%s message=%s",
+                to,
+                message_id,
+                response.status_code,
+                error.get("code"),
+                error.get("message"),
+            )
+
+        return response.json()
+
+    except Exception:
+        logger.exception("Error sending typing indicator to %s", to)
+        raise
