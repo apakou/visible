@@ -1,7 +1,13 @@
+import logging
 import os
 
 import requests
 from dotenv.main import load_dotenv
+
+from app.logging_config import setup_logging
+
+setup_logging()
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -17,52 +23,89 @@ HEADERS = {
 def _post(payload: dict) -> dict:
     """Send any message payload to the WhatsApp API."""
     url = f"{BASE_URL}/messages"
-    response = requests.post(url, headers=HEADERS, json=payload)
-    print("Status:", response.status_code)
-    print("Response:", response.text)
-    return response.json()
+    msg_type = payload.get("type", "unknown")
+    to = payload.get("to", "unknown")
+
+    logger.debug("Sending %s message to %s", msg_type, to)
+
+    try:
+        response = requests.post(url, headers=HEADERS, json=payload)
+        response_data = response.json()
+
+        if response.status_code == 200:
+            message_id = response_data.get("messages", [{}])[0].get("id", "unknown")
+            logger.info(
+                "Message sent | type=%s to=%s message_id=%s",
+                msg_type,
+                to,
+                message_id,
+            )
+        else:
+            error = response_data.get("error", {})
+            logger.error(
+                "Message failed | type=%s to=%s status=%s code=%s message=%s",
+                msg_type,
+                to,
+                response.status_code,
+                error.get("code"),
+                error.get("message"),
+            )
+
+        return response_data
+
+    except requests.exceptions.ConnectionError:
+        logger.exception("Network error sending %s message to %s", msg_type, to)
+        raise
+    except requests.exceptions.Timeout:
+        logger.exception("Timeout sending %s message to %s", msg_type, to)
+        raise
+    except Exception:
+        logger.exception("Unexpected error sending %s message to %s", msg_type, to)
+        raise
 
 
 # ─────────────────────────────────────────────
-# 1. TYPING INDICATOR
+# 1. TYPING INDICATOR / READ RECEIPT
 # ─────────────────────────────────────────────
-
-
-def send_typing_indicator(to: str) -> dict:
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to,
-        "type": "reaction",  # WhatsApp uses a 'status' trick for typing
-        "status": {
-            "status": "read",
-            "message_id": "typing",  # placeholder — real impl needs last message_id
-        },
-    }
-    # NOTE: The proper way is to mark the last received message as 'read'
-    # which triggers the typing indicator on the sender's side.
-    # See send_read_receipt() below for the correct approach.
-    return payload  # placeholder — use send_read_receipt in practice
 
 
 def send_read_receipt(to: str, message_id: str) -> dict:
     """
-    Mark a message as read. This shows the blue ticks AND
-    triggers the typing indicator on the user's side.
-    Always call this before replying so users know you received their message.
+    Mark a message as read. Shows blue ticks and triggers the typing
+    indicator on the user's side. Call this before every reply.
 
     Args:
         to: User's phone number
         message_id: The 'id' field from the incoming webhook message object
     """
+    logger.debug("Sending read receipt to %s for message %s", to, message_id)
+
     payload = {
         "messaging_product": "whatsapp",
         "status": "read",
         "message_id": message_id,
     }
     url = f"{BASE_URL}/messages"
-    response = requests.post(url, headers=HEADERS, json=payload)
-    print("Read receipt status:", response.status_code)
-    return response.json()
+
+    try:
+        response = requests.post(url, headers=HEADERS, json=payload)
+
+        if response.status_code == 200:
+            logger.info("Read receipt sent | to=%s message_id=%s", to, message_id)
+        else:
+            logger.warning(
+                "Read receipt failed | to=%s message_id=%s status=%s body=%s",
+                to,
+                message_id,
+                response.status_code,
+                response.text,
+            )
+
+        return response.json()
+
+    except Exception:
+        logger.exception("Error sending read receipt to %s", to)
+        raise
 
 
 # ─────────────────────────────────────────────
@@ -80,6 +123,8 @@ def send_text(to: str, body: str, preview_url: bool = False) -> dict:
         body: Message text (max 4096 characters)
         preview_url: Show a link preview if the text contains a URL
     """
+    logger.debug("send_text | to=%s chars=%d", to, len(body))
+
     payload = {
         "messaging_product": "whatsapp",
         "to": to,
@@ -112,7 +157,6 @@ def send_template(
         template_name: Exact name of your approved template in Meta Business Manager
         language_code: Language of the template (e.g. "en_US", "en_GB")
         components: List of component objects to fill template variables.
-                    See examples below.
 
     Example — template with a body variable {{1}}:
         send_template(
@@ -123,23 +167,14 @@ def send_template(
                 "parameters": [{"type": "text", "text": "Ruth"}]
             }]
         )
-
-    Example — template with a header image + body text:
-        send_template(
-            to="233501234567",
-            template_name="welcome_with_image",
-            components=[
-                {
-                    "type": "header",
-                    "parameters": [{"type": "image", "image": {"link": "https://..."}}]
-                },
-                {
-                    "type": "body",
-                    "parameters": [{"type": "text", "text": "Ruth"}]
-                }
-            ]
-        )
     """
+    logger.debug(
+        "send_template | to=%s template=%s lang=%s",
+        to,
+        template_name,
+        language_code,
+    )
+
     payload = {
         "messaging_product": "whatsapp",
         "to": to,
@@ -174,7 +209,7 @@ def send_reply_buttons(
     Args:
         to: Recipient phone number
         body_text: Main message text
-        buttons: List of dicts with 'id' and 'title' keys (max 3 buttons, title max 20 chars)
+        buttons: List of dicts with 'id' and 'title' keys (max 3, title max 20 chars)
         header_text: Optional bold text above the body
         footer_text: Optional small grey text below the buttons
 
@@ -189,12 +224,22 @@ def send_reply_buttons(
             footer_text="Visbl · Your shop record"
         )
     """
+    button_ids = [b["id"] for b in buttons[:3]]
+    logger.debug("send_reply_buttons | to=%s button_ids=%s", to, button_ids)
+
+    if len(buttons) > 3:
+        logger.warning(
+            "send_reply_buttons | to=%s got %d buttons, trimming to 3",
+            to,
+            len(buttons),
+        )
+
     formatted_buttons = [
         {
             "type": "reply",
             "reply": {"id": btn["id"], "title": btn["title"]},
         }
-        for btn in buttons[:3]  # WhatsApp max is 3
+        for btn in buttons[:3]
     ]
 
     interactive = {
@@ -250,19 +295,27 @@ def send_list_message(
             sections=[{
                 "title": "Clothing & Footwear",
                 "rows": [
-                    {"id": "cat_footwear",  "title": "Shoes & Sandals",    "description": "All types of footwear"},
-                    {"id": "cat_clothing",  "title": "Tops & Bottoms",     "description": "Shirts, trousers, dresses"},
-                    {"id": "cat_bags",      "title": "Bags & Accessories", "description": "Handbags, jewellery"},
-                ]
-            }, {
-                "title": "Food & Goods",
-                "rows": [
-                    {"id": "cat_food",      "title": "Food Items",         "description": "Grains, packaged goods"},
-                    {"id": "cat_household", "title": "Household Items",    "description": "Cleaning, kitchenware"},
+                    {"id": "cat_footwear", "title": "Shoes & Sandals", "description": "All types of footwear"},
+                    {"id": "cat_clothing", "title": "Tops & Bottoms",  "description": "Shirts, trousers, dresses"},
                 ]
             }]
         )
     """
+    total_rows = sum(len(s.get("rows", [])) for s in sections)
+    logger.debug(
+        "send_list_message | to=%s sections=%d total_rows=%d",
+        to,
+        len(sections),
+        total_rows,
+    )
+
+    if total_rows > 10:
+        logger.warning(
+            "send_list_message | to=%s has %d rows, WhatsApp max is 10",
+            to,
+            total_rows,
+        )
+
     formatted_sections = []
     for section in sections:
         formatted_rows = [
@@ -312,31 +365,28 @@ def send_list_message(
 
 
 def send_image(
-    to: str, image_url: str = None, media_id: str = None, caption: str = None
+    to: str,
+    image_url: str = None,
+    media_id: str = None,
+    caption: str = None,
 ) -> dict:
     """
     Send an image. Use either a public URL or a pre-uploaded Meta media_id.
-    For production, upload images first with the Media API and use media_id
-    (faster, more reliable than URLs).
 
     Args:
         to: Recipient phone number
         image_url: Publicly accessible URL of the image (JPEG, PNG, WebP — max 5MB)
         media_id: Meta media ID from a prior upload (preferred for production)
         caption: Optional text shown below the image (max 1024 chars)
-
-    Example with URL:
-        send_image(
-            to="233501234567",
-            image_url="https://yourdomain.com/visbl-shield-tiers.png",
-            caption="Your Shield tier options 🛡️"
-        )
-
-    Example with media_id:
-        send_image(to="233501234567", media_id="1234567890", caption="Receipt saved ✅")
     """
     if not image_url and not media_id:
+        logger.error(
+            "send_image | to=%s called with neither image_url nor media_id", to
+        )
         raise ValueError("Provide either image_url or media_id")
+
+    source = f"media_id={media_id}" if media_id else f"url={image_url}"
+    logger.debug("send_image | to=%s source=%s", to, source)
 
     image_obj = {}
     if media_id:
@@ -377,17 +427,15 @@ def send_document(
         media_id: Meta media ID from a prior upload (preferred)
         filename: The display name shown in the chat (e.g. "Visbl_Report_June.pdf")
         caption: Optional text shown below the document
-
-    Example:
-        send_document(
-            to="233501234567",
-            document_url="https://yourdomain.com/reports/ruth_inventory.pdf",
-            filename="Ruth_Shop_Record.pdf",
-            caption="Here is your shop record for June 2025 📄"
-        )
     """
     if not document_url and not media_id:
+        logger.error(
+            "send_document | to=%s called with neither document_url nor media_id", to
+        )
         raise ValueError("Provide either document_url or media_id")
+
+    source = f"media_id={media_id}" if media_id else f"url={document_url}"
+    logger.debug("send_document | to=%s filename=%s source=%s", to, filename, source)
 
     doc_obj = {"filename": filename}
     if media_id:
@@ -434,37 +482,27 @@ def send_whatsapp_flow(
         flow_cta: Button label that opens the Flow (e.g. "Review My Records")
         flow_token: A unique token you generate per send (use uuid4)
         screen: The screen to open first (must match a screen ID in your Flow JSON)
-        prefill_data: Dict of data to pre-fill form fields (e.g. inventory items from Claude)
+        prefill_data: Dict of data to pre-fill form fields
         header_text: Optional bold header above body
         footer_text: Optional footer below CTA button
         mode: "published" for live, "draft" for testing
-
-    Example — inventory verification flow pre-filled from Claude:
-        import uuid
-        send_whatsapp_flow(
-            to="233501234567",
-            body_text="Here is what I found in your shop. Please check and correct if needed.",
-            flow_id="1234567890123456",
-            flow_cta="Review My Records",
-            flow_token=str(uuid.uuid4()),
-            screen="INVENTORY_REVIEW",
-            prefill_data={
-                "items": [
-                    {"name": "Sneakers", "qty": 15},
-                    {"name": "Heels",    "qty": 10},
-                ]
-            },
-            footer_text="Visbl · Your shop record"
-        )
     """
-    action_payload = (
-        {
-            "screen": screen,
-            "data": prefill_data or {},
-        }
-        if screen
-        else {}
+    logger.debug(
+        "send_whatsapp_flow | to=%s flow_id=%s screen=%s mode=%s token=%s",
+        to,
+        flow_id,
+        screen,
+        mode,
+        flow_token,
     )
+
+    if mode == "draft":
+        logger.warning(
+            "send_whatsapp_flow | to=%s sending in DRAFT mode — not visible to real users",
+            to,
+        )
+
+    action_payload = {"screen": screen, "data": prefill_data or {}} if screen else {}
 
     flow_params = {
         "flow_message_version": "3",
