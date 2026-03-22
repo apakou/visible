@@ -1,3 +1,4 @@
+import logging
 import os
 
 from dotenv.main import load_dotenv
@@ -8,6 +9,10 @@ from twilio.twiml.messaging_response import MessagingResponse
 from app.DB.database import SessionLocal, engine
 from app.DB.models import Base, Owner
 from app.handlers import image_analyzer
+from app.logging_config import setup_logging
+
+setup_logging()
+logger = logging.getLogger(__name__)
 
 Base.metadata.create_all(bind=engine)
 
@@ -48,7 +53,10 @@ async def verify(req: Request):
 @app.post("/webhook")
 async def whatsapp_webhook(request: Request):
     data = await request.json()
-    print(data, "stuff is here")
+
+    logger.info("whatsapp_webhook_received")
+    logger.debug("webhook_payload %s", data)
+    
     # response = MessagingResponse()
 
     # 2. Logic: Identify the Trader
