@@ -140,14 +140,6 @@ async def whatsapp_webhook(request: Request, db: Session = Depends(get_db)):
             msg_type = "text"
             message = {**message, "text": {"body": transcript}}
 
-        # ── Unsupported message types ──
-        if msg_type not in ("text", "interactive", "image", "audio"):
-            send_text(
-                phone,
-                "I can only read text messages, photos, and voice notes. Please send one of those.",
-            )
-            return Response(status_code=200)
-
         # ── Global reset — works at any point in onboarding or after ──
         _raw_text = message.get("text", {}).get("body", "").strip().lower()
         if msg_type == "text" and _raw_text in (

@@ -344,79 +344,98 @@ async def step_2c_handle_text_stock(phone: str, text: str, session: dict):
 
 
 async def step_3_handle_photo(phone: str, message: dict, session: dict):
+    # Dedup guard: prevent duplicate processing from concurrent webhook deliveries
+    live = state.sessions.get(phone, {})
+    if live.get("step") != "AWAITING_PHOTO":
+        logger.warning(
+            "onboarding_step_3_duplicate_skip | phone=%s step=%s",
+            phone,
+            live.get("step"),
+        )
+        return
+    live["step"] = "PROCESSING_PHOTO"
+    state.sessions[phone] = live
+
     t0 = time.perf_counter()
     logger.info("onboarding_step_3_start | phone=%s", phone)
 
     message_id = message["id"]
-    media_id = message["image"]["id"]
-
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            url_resp = await client.get(
-                f"https://graph.facebook.com/v22.0/{media_id}",
-                headers={"Authorization": f"Bearer {ACCESS_TOKEN}"},
-            )
-        media_url = url_resp.json().get("url")
-    except Exception:
-        logger.exception(
-            "onboarding_step_3_media_url_error | phone=%s media_id=%s", phone, media_id
-        )
-        send_text(
-            phone,
-            "I could not reach WhatsApp to download your photo. Please try again. 📸",
-        )
-        return
-
-    if not media_url:
-        logger.warning(
-            "onboarding_step_3_no_media_url | phone=%s media_id=%s", phone, media_id
-        )
-        send_text(
-            phone,
-            "Sorry, I could not read that photo. Please try again — "
-            "make sure your shelves are well lit and in the frame. 📸",
-        )
-        return
-
-    logger.debug(
-        "onboarding_step_3_media_url_fetched | phone=%s elapsed=%.2fs",
-        phone,
-        time.perf_counter() - t0,
+    media_ids = (
+        [message["image"]] if isinstance(message["image"], dict) else message["image"]
     )
 
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            img_resp, _ = await asyncio.gather(
-                client.get(
+    image_b64s = []
+    for media_id_obj in media_ids:
+        media_id = media_id_obj["id"]
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                url_resp = await client.get(
+                    f"https://graph.facebook.com/v22.0/{media_id}",
+                    headers={"Authorization": f"Bearer {ACCESS_TOKEN}"},
+                )
+            media_url = url_resp.json().get("url")
+        except Exception:
+            logger.exception(
+                "onboarding_step_3_media_url_error | phone=%s media_id=%s",
+                phone,
+                media_id,
+            )
+            state.sessions[phone]["step"] = "AWAITING_PHOTO"
+            send_text(
+                phone,
+                "I could not reach WhatsApp to download your photo. Please try again. 📸",
+            )
+            return
+
+        if not media_url:
+            logger.warning(
+                "onboarding_step_3_no_media_url | phone=%s media_id=%s", phone, media_id
+            )
+            state.sessions[phone]["step"] = "AWAITING_PHOTO"
+            send_text(
+                phone,
+                "Sorry, I could not read that photo. Please try again — "
+                "make sure your shelves are well lit and in the frame. 📸",
+            )
+            return
+
+        logger.debug(
+            "onboarding_step_3_media_url_fetched | phone=%s elapsed=%.2fs",
+            phone,
+            time.perf_counter() - t0,
+        )
+
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                img_resp = await client.get(
                     media_url, headers={"Authorization": f"Bearer {ACCESS_TOKEN}"}
-                ),
-                asyncio.to_thread(
-                    send_text, phone, "Got it! Counting your stock now... ⏳"
-                ),
+                )
+        except Exception:
+            logger.exception("onboarding_step_3_download_error | phone=%s", phone)
+            state.sessions[phone]["step"] = "AWAITING_PHOTO"
+            send_text(
+                phone,
+                "I had trouble downloading your photo. Please send it again. 📸",
             )
-    except Exception:
-        logger.exception("onboarding_step_3_download_error | phone=%s", phone)
-        send_text(
+            return
+
+        image_b64s.append(base64.b64encode(img_resp.content).decode("utf-8"))
+
+        logger.debug(
+            "onboarding_step_3_image_downloaded | phone=%s size_kb=%.1f elapsed=%.2fs",
             phone,
-            "I had trouble downloading your photo. Please send it again. 📸",
+            len(img_resp.content) / 1024,
+            time.perf_counter() - t0,
         )
-        return
 
-    image_b64 = base64.b64encode(img_resp.content).decode("utf-8")
-
-    logger.debug(
-        "onboarding_step_3_image_downloaded | phone=%s size_kb=%.1f elapsed=%.2fs",
-        phone,
-        len(img_resp.content) / 1024,
-        time.perf_counter() - t0,
-    )
-
+    send_text(phone, "Got it! Counting your stock now... ⏳")
     send_typing_indicator(phone, message_id)
 
-    inventory = await step_4_parse_inventory_with_claude(phone, image_b64)
+    inventory = await step_4_parse_inventory_with_claude(phone, image_b64s)
 
     if not inventory:
         logger.warning("onboarding_step_3_no_inventory | phone=%s", phone)
+        state.sessions[phone]["step"] = "AWAITING_PHOTO"
         send_text(
             phone,
             "I could not read the stock clearly from that photo. "
@@ -589,7 +608,7 @@ async def step_3_handle_voice(phone: str, message: dict, session: dict):
 # ─────────────────────────────────────────────
 
 
-async def step_4_parse_inventory_with_claude(phone: str, image_b64: str) -> list:
+async def step_4_parse_inventory_with_claude(phone: str, image_b64s: list) -> list:
     t0 = time.perf_counter()
     logger.info("claude_vision_start | phone=%s", phone)
     raw = None
@@ -615,14 +634,17 @@ async def step_4_parse_inventory_with_claude(phone: str, image_b64: str) -> list
                     {
                         "role": "user",
                         "content": [
-                            {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": "image/jpeg",
-                                    "data": image_b64,
-                                },
-                            },
+                            *[
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "image/jpeg",
+                                        "data": img_b64,
+                                    },
+                                }
+                                for img_b64 in image_b64s
+                            ],
                             {
                                 "type": "text",
                                 "text": (
@@ -1050,15 +1072,7 @@ async def handle_existing_user(phone: str, message: dict, owner):
 
     name = (owner.name if owner and owner.name else "").strip()
     greeting = f"Hi {name}!" if name else "Hey!"
-
     # ── Unsupported message types ──
-    if msg_type not in ("text", "interactive", "image", "audio"):
-        send_text(
-            phone,
-            "I can only read text messages, photos, and voice notes. "
-            "Please send one of those.",
-        )
-        return
 
     # ── Global: cancel from any active step ──
     if text_lower == "cancel" and step in _CANCELLABLE_STEPS:
@@ -1348,6 +1362,12 @@ async def handle_existing_user(phone: str, message: dict, owner):
                 "Send *GHS 2* to *0XX XXX XXXX* (Visbl) · Reference: REPORT\n\n"
                 "Reply *PAID* once done, or *CANCEL* to go back.",
             )
+        return
+    # ── Photo/voice currently being processed by a concurrent webhook ──
+    # The first webhook already set the step to PROCESSING_* and is running.
+    # Silently drop this duplicate rather than sending confusing messages.
+    if step in ("DAILY_PROCESSING_PHOTO", "PROCESSING_PHOTO"):
+        logger.info("concurrent_webhook_skip | phone=%s step=%s", phone, step)
         return
 
     # ── IDLE / fallback ──
@@ -1671,39 +1691,70 @@ async def _daily_handle_voice(phone: str, message: dict, session: dict):
 
 
 async def _transcribe_audio(phone: str, audio_bytes: bytes) -> str | None:
-    """Transcribe audio bytes using OpenAI Whisper API."""
+    """Transcribe audio bytes. Uses Groq (free) as primary, OpenAI Whisper as fallback."""
     t0 = time.perf_counter()
-    logger.info("whisper_start | phone=%s size_kb=%.1f", phone, len(audio_bytes) / 1024)
+    logger.info(
+        "transcribe_start | phone=%s size_kb=%.1f", phone, len(audio_bytes) / 1024
+    )
 
-    openai_api_key = os.getenv("OPENAI_API_KEY")
-    if not openai_api_key:
-        logger.error("whisper_no_api_key | phone=%s", phone)
-        return None
+    groq_key = os.getenv("GROQ_API_KEY")
+    openai_key = os.getenv("OPENAI_API_KEY")
 
-    try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.post(
-                "https://api.openai.com/v1/audio/transcriptions",
-                headers={"Authorization": f"Bearer {openai_api_key}"},
-                data={"model": "whisper-1", "language": "en"},
-                files={"file": ("audio.ogg", audio_bytes, "audio/ogg")},
+    providers = []
+    if groq_key:
+        providers.append(
+            (
+                "groq",
+                "https://api.groq.com/openai/v1/audio/transcriptions",
+                groq_key,
+                "whisper-large-v3",
             )
-            response.raise_for_status()
-            transcript = response.json().get("text", "").strip()
-
-        logger.info(
-            "whisper_complete | phone=%s elapsed=%.2fs transcript_len=%d",
-            phone,
-            time.perf_counter() - t0,
-            len(transcript),
         )
-        return transcript or None
-
-    except Exception:
-        logger.exception(
-            "whisper_error | phone=%s elapsed=%.2fs", phone, time.perf_counter() - t0
+    if openai_key:
+        providers.append(
+            (
+                "openai",
+                "https://api.openai.com/v1/audio/transcriptions",
+                openai_key,
+                "whisper-1",
+            )
         )
+
+    if not providers:
+        logger.error("transcribe_no_key | phone=%s reason=no_groq_or_openai_key", phone)
         return None
+
+    for provider, url, api_key, model in providers:
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.post(
+                    url,
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    data={"model": model},
+                    files={"file": ("audio.ogg", audio_bytes, "audio/ogg")},
+                )
+                response.raise_for_status()
+                transcript = response.json().get("text", "").strip()
+
+            logger.info(
+                "transcribe_complete | phone=%s provider=%s elapsed=%.2fs transcript_len=%d",
+                phone,
+                provider,
+                time.perf_counter() - t0,
+                len(transcript),
+            )
+            return transcript or None
+
+        except Exception:
+            logger.exception(
+                "transcribe_error | phone=%s provider=%s elapsed=%.2fs",
+                phone,
+                provider,
+                time.perf_counter() - t0,
+            )
+            # try next provider
+
+    return None
 
 
 async def _daily_handle_text(phone: str, text: str, session: dict):
@@ -1723,54 +1774,70 @@ async def _daily_handle_text(phone: str, text: str, session: dict):
 
 
 async def _daily_handle_photo(phone: str, message: dict, session: dict):
+    # Dedup guard: prevent duplicate processing from concurrent webhook deliveries
+    live = state.sessions.get(phone, {})
+    if live.get("step") != "DAILY_AWAITING_PHOTO":
+        logger.warning(
+            "daily_photo_duplicate_skip | phone=%s step=%s", phone, live.get("step")
+        )
+        return
+    live["step"] = "DAILY_PROCESSING_PHOTO"
+    state.sessions[phone] = live
+
     t0 = time.perf_counter()
     logger.info("daily_photo_start | phone=%s", phone)
 
     message_id = message["id"]
-    media_id = message["image"]["id"]
+    media_ids = (
+        [message["image"]] if isinstance(message["image"], dict) else message["image"]
+    )
 
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            url_resp = await client.get(
-                f"https://graph.facebook.com/v22.0/{media_id}",
-                headers={"Authorization": f"Bearer {ACCESS_TOKEN}"},
+    image_b64s = []
+    for media_id_obj in media_ids:
+        media_id = media_id_obj["id"]
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                url_resp = await client.get(
+                    f"https://graph.facebook.com/v22.0/{media_id}",
+                    headers={"Authorization": f"Bearer {ACCESS_TOKEN}"},
+                )
+            media_url = url_resp.json().get("url")
+        except Exception as e:
+            logger.exception("daily_photo_url_error | phone=%s error=%s", phone, e)
+            state.sessions[phone]["step"] = "DAILY_AWAITING_PHOTO"
+            send_text(
+                phone,
+                "I could not reach WhatsApp to download your photo. Please try again. 📸",
             )
-        media_url = url_resp.json().get("url")
-    except Exception as e:
-        logger.exception("daily_photo_url_error | phone=%s error=%s", phone, e)
-        send_text(
-            phone,
-            "I could not reach WhatsApp to download your photo. Please try again. 📸",
-        )
-        return
+            return
 
-    if not media_url:
-        send_text(phone, "Sorry, I could not read that photo. Please try again. 📸")
-        return
+        if not media_url:
+            state.sessions[phone]["step"] = "DAILY_AWAITING_PHOTO"
+            send_text(phone, "Sorry, I could not read that photo. Please try again. 📸")
+            return
 
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            img_resp, _ = await asyncio.gather(
-                client.get(
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                img_resp = await client.get(
                     media_url, headers={"Authorization": f"Bearer {ACCESS_TOKEN}"}
-                ),
-                asyncio.to_thread(
-                    send_text, phone, "Got it! Counting your stock now... ⏳"
-                ),
+                )
+        except Exception as e:
+            logger.exception("daily_photo_download_error | phone=%s error=%s", phone, e)
+            state.sessions[phone]["step"] = "DAILY_AWAITING_PHOTO"
+            send_text(
+                phone, "I had trouble downloading your photo. Please send it again. 📸"
             )
-    except Exception as e:
-        logger.exception("daily_photo_download_error | phone=%s error=%s", phone, e)
-        send_text(
-            phone, "I had trouble downloading your photo. Please send it again. 📸"
-        )
-        return
+            return
 
-    image_b64 = base64.b64encode(img_resp.content).decode("utf-8")
+        image_b64s.append(base64.b64encode(img_resp.content).decode("utf-8"))
+
+    send_text(phone, "Got it! Counting your stock now... ⏳")
     send_typing_indicator(phone, message_id)
 
-    inventory = await step_4_parse_inventory_with_claude(phone, image_b64)
+    inventory = await step_4_parse_inventory_with_claude(phone, image_b64s)
 
     if not inventory:
+        state.sessions[phone]["step"] = "DAILY_AWAITING_PHOTO"
         send_text(
             phone,
             "I could not read the stock clearly from that photo. "
@@ -1985,8 +2052,11 @@ def parse_inventory(raw: str):
             return data
         return None
     except Exception as e:
-        print("PARSE ERROR:", e)
-        print("RAW:", raw)
+        logger.error(
+            "parse_inventory_json_error | error=%s raw=%r",
+            e,
+            raw[:200] if raw else None,
+        )
         return None
 
 
