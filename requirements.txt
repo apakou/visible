@@ -7,3 +7,8 @@ twilio
 python-multipart
 cryptography
 Pillow
+fpdf2
+requests
+openai
+anthropic
+httpx

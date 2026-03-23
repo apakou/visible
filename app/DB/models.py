@@ -25,6 +25,7 @@ class Owner(Base):
     shop_name = Column(String)
     location = Column(String)  # e.g., "Circle Market"
     language_pref = Column(String, default="en")  # English or Twi
+    category = Column(String)  # e.g. "Clothing & Footwear"
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

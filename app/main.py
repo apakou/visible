@@ -13,12 +13,20 @@ from app.DB.models import Base, Owner
 from app.handlers import onboarding
 from app.handlers.flow_exchange import router as flow_router
 from app.handlers.onboarding import (
-    step_2_ask_for_photo,
+    step_1b_ask_name,
+    step_1c_handle_name,
+    step_1d_handle_shop,
+    step_1e_handle_location,
+    step_1f_handle_category,
+    step_2b_handle_input_choice,
+    step_2c_handle_text_stock,
     step_3_handle_photo,
+    step_3_handle_voice,
     step_5_handle_flow_submission,
     step_5b_handle_stock_value,
     step_5c_handle_restart_cap,
 )
+from app.handlers.voice_transcriber import transcribe_voice_message
 from app.handlers.whatsapp_manager import (
     send_reply_buttons,
     send_text,
@@ -71,6 +79,7 @@ async def verify(req: Request):
 
 @app.post("/webhook")
 async def whatsapp_webhook(request: Request, db: Session = Depends(get_db)):
+    phone = None  # keep in scope so the except block can notify the user
     try:
         data = await request.json()
 
@@ -107,6 +116,49 @@ async def whatsapp_webhook(request: Request, db: Session = Depends(get_db)):
 
         send_typing_indicator(phone, message_id)
 
+        # ── Read session early so we can check step before audio routing ──
+        session = state.sessions.get(phone, {"step": "NEW"})
+
+        # ── Voice note — transcribe to text, then route normally ──
+        # Skip auto-transcription if the user is in AWAITING_VOICE_STOCK —
+        # that step handles the raw audio itself via step_3_handle_voice.
+        if msg_type == "audio" and session.get("step") != "AWAITING_VOICE_STOCK":
+            media_id = message.get("audio", {}).get("id")
+            transcript = (
+                await transcribe_voice_message(media_id, phone) if media_id else None
+            )
+            if not transcript:
+                send_text(
+                    phone,
+                    "I could not understand that voice note. Please try again or type your message.",
+                )
+                return Response(status_code=200)
+            logger.info(
+                "voice_transcribed | phone=%s transcript=%r", phone, transcript[:80]
+            )
+            # Treat the transcript as a regular text message from here on
+            msg_type = "text"
+            message = {**message, "text": {"body": transcript}}
+
+        # ── Unsupported message types ──
+        if msg_type not in ("text", "interactive", "image", "audio"):
+            send_text(
+                phone,
+                "I can only read text messages, photos, and voice notes. Please send one of those.",
+            )
+            return Response(status_code=200)
+
+        # ── Global reset — works at any point in onboarding or after ──
+        _raw_text = message.get("text", {}).get("body", "").strip().lower()
+        if msg_type == "text" and _raw_text in (
+            "delete my data",
+            "reset",
+            "start over",
+        ):
+            owner = db.query(Owner).filter(Owner.phone_number == phone).first()
+            await onboarding.handle_existing_user(phone, message, owner)
+            return Response(status_code=200)
+
         # ── Existing owner ──
         owner = db.query(Owner).filter(Owner.phone_number == phone).first()
         if owner:
@@ -115,19 +167,37 @@ async def whatsapp_webhook(request: Request, db: Session = Depends(get_db)):
             return Response(status_code=200)
 
         # ── New / in-progress user ──
-        session = state.sessions.get(phone, {"step": "NEW"})
+        # session already read above — just ensure fallback is safe
         incoming_text = message.get("text", {}).get("body", "").strip().lower()
 
         logger.info("webhook_session | phone=%s step=%s", phone, session["step"])
 
-        if session["step"] == "NEW" or incoming_text in ["hi", "hello", "hey", "start"]:
+        _mid_onboarding = session["step"] not in ("NEW", "IDLE", "COMPLETE")
+
+        # ── Mid-onboarding cancel — restart from welcome at any step ──
+        if (
+            msg_type == "text"
+            and incoming_text in ("cancel", "restart")
+            and _mid_onboarding
+        ):
+            logger.info(
+                "webhook_onboarding_cancelled | phone=%s step=%s",
+                phone,
+                session["step"],
+            )
+            await onboarding.step_1_greeting_button(phone)
+            return Response(status_code=200)
+
+        if session["step"] == "NEW" or (
+            incoming_text in ["hi", "hello", "hey", "start"] and not _mid_onboarding
+        ):
             await onboarding.step_1_greeting_button(phone)
 
         elif session["step"] == "AWAITING_BUTTON_CLICK":
             button_id = message.get("interactive", {}).get("button_reply", {}).get("id")
             if button_id == "start_onboarding":
                 logger.info("webhook_button_start_onboarding | phone=%s", phone)
-                await step_2_ask_for_photo(phone)
+                await step_1b_ask_name(phone)
             else:
                 logger.warning(
                     "webhook_unexpected_button | phone=%s button_id=%s",
@@ -137,12 +207,56 @@ async def whatsapp_webhook(request: Request, db: Session = Depends(get_db)):
                 send_reply_buttons(
                     to=phone,
                     body_text="Please tap the button below to get started.",
-                    buttons=[
-                        {
-                            "id": "start_onboarding",
-                            "title": "Show me how",
-                        }
-                    ],
+                    buttons=[{"id": "start_onboarding", "title": "Show me how"}],
+                )
+
+        elif session["step"] == "AWAITING_NAME":
+            if msg_type != "text" or not incoming_text:
+                send_text(phone, "Please type your name to continue.")
+            else:
+                await step_1c_handle_name(
+                    phone, message.get("text", {}).get("body", ""), session
+                )
+
+        elif session["step"] == "AWAITING_SHOP":
+            if msg_type != "text" or not incoming_text:
+                send_text(phone, "Please type your shop name to continue.")
+            else:
+                await step_1d_handle_shop(
+                    phone, message.get("text", {}).get("body", ""), session
+                )
+
+        elif session["step"] == "AWAITING_LOCATION":
+            if msg_type != "text" or not incoming_text:
+                send_text(phone, "Please type your shop location to continue.")
+            else:
+                await step_1e_handle_location(
+                    phone, message.get("text", {}).get("body", ""), session
+                )
+
+        elif session["step"] == "AWAITING_CATEGORY":
+            row_id = message.get("interactive", {}).get("list_reply", {}).get("id")
+            if not row_id:
+                send_text(phone, "Please pick a category from the list above.")
+            else:
+                await step_1f_handle_category(phone, row_id, session)
+
+        elif session["step"] == "AWAITING_INPUT_TYPE":
+            # Now uses send_list_message so reads list_reply, with button_reply as fallback
+            interactive = message.get("interactive", {})
+            button_id = interactive.get("list_reply", {}).get("id") or interactive.get(
+                "button_reply", {}
+            ).get("id")
+            await step_2b_handle_input_choice(phone, button_id)
+
+        elif session["step"] == "AWAITING_TEXT_STOCK":
+            if msg_type == "text":
+                await step_2c_handle_text_stock(phone, incoming_text, session)
+            else:
+                send_text(
+                    phone,
+                    "Please type your stock list as a message.\n\n"
+                    "Example: Sneakers: 15, Heels: 10, Bags: 5",
                 )
 
         elif session["step"] == "AWAITING_PHOTO":
@@ -160,18 +274,63 @@ async def whatsapp_webhook(request: Request, db: Session = Depends(get_db)):
                     "Open your camera, take a clear picture of your stock, and send it here.",
                 )
 
+        elif session["step"] == "AWAITING_VOICE_STOCK":
+            if msg_type == "audio":
+                await step_3_handle_voice(phone, message, session)
+            else:
+                send_text(
+                    phone,
+                    "Please send a voice note. 🎤\n\nOr type *cancel* to go back.",
+                )
+
         elif session["step"] == "AWAITING_FLOW":
-            flow_response = message.get("interactive", {}).get("nfm_reply", {})
+            interactive = message.get("interactive", {})
+            flow_response = interactive.get("nfm_reply", {})
+            button_id = interactive.get("button_reply", {}).get("id")
+
             if flow_response:
                 await step_5_handle_flow_submission(phone, flow_response, session)
+            elif button_id == "inventory_correct":
+                logger.info("webhook_inventory_confirmed_button | phone=%s", phone)
+                await onboarding.step_5b_ask_stock_value(phone)
+            elif button_id == "inventory_edit":
+                logger.info("webhook_inventory_edit_button | phone=%s", phone)
+                current = session.get("inventory", [])
+                items_text = "\n".join([f"• {i['item']}: {i['qty']}" for i in current])
+                send_text(
+                    phone,
+                    f"Here is what I counted:\n\n{items_text}\n\n"
+                    "Type your corrections below.\n\n"
+                    "Example: Sneakers: 20, Heels: 5, Bags: 3",
+                )
+                state.sessions[phone]["step"] = "AWAITING_TEXT_STOCK"
             else:
-                logger.warning("webhook_empty_flow_response | phone=%s", phone)
+                logger.warning(
+                    "webhook_unexpected_flow_input | phone=%s type=%s", phone, msg_type
+                )
+                send_reply_buttons(
+                    to=phone,
+                    body_text="Please tap a button below to continue.",
+                    buttons=[
+                        {"id": "inventory_correct", "title": "Yes, correct ✅"},
+                        {"id": "inventory_edit", "title": "No, edit it"},
+                    ],
+                )
 
         elif session["step"] == "AWAITING_CAPS_Q1":
-            await step_5b_handle_stock_value(phone, incoming_text, session)
+            if msg_type != "text":
+                send_text(phone, "Please reply with a number. Example: *50000*")
+            else:
+                await step_5b_handle_stock_value(phone, incoming_text, session)
 
         elif session["step"] == "AWAITING_CAPS_Q2":
-            await step_5c_handle_restart_cap(phone, incoming_text, session)
+            if msg_type != "text":
+                send_text(phone, "Please reply with a number. Example: *10000*")
+            else:
+                await step_5c_handle_restart_cap(phone, incoming_text, session)
+
+        elif session["step"] in ("AWAITING_PAYMENT_DECISION", "IDLE", "COMPLETE"):
+            await onboarding.handle_existing_user(phone, message, None)
 
         else:
             logger.warning(
@@ -181,13 +340,21 @@ async def whatsapp_webhook(request: Request, db: Session = Depends(get_db)):
         return Response(status_code=200)
 
     except Exception:
-        logger.exception("webhook_error")
-        return Response(content="Internal server error", status_code=500)
+        logger.exception("webhook_error | phone=%s", phone)
+        if phone:
+            try:
+                send_text(
+                    phone,
+                    "Something went wrong on our end. Please try again in a moment.\n\n"
+                    "If this keeps happening, type *cancel* to restart.",
+                )
+            except Exception:
+                logger.exception("webhook_error_notify_failed | phone=%s", phone)
+        return Response(status_code=200)  # always 200 so WhatsApp doesn't retry
 
 
 async def handle_existing_owner(phone, message, owner):
-    # TODO: Handle existing owner logic
-    return "we will do this later"
+    await onboarding.handle_existing_user(phone, message, owner)
 
 
 def _log_message_status(status: dict) -> None:

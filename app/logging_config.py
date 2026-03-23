@@ -85,7 +85,7 @@ def setup_logging() -> None:
     min_level = _parse_level(os.getenv("LOG_LEVEL", "DEBUG"))
 
     formatter = logging.Formatter(
-        fmt="%(asctime)s %(levelname)-8s %(name)s %(message)s",
+        fmt="%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
@@ -121,8 +121,10 @@ def setup_logging() -> None:
         )
     )
 
-    # ── Optional stdout mirror ─────────────────────────────────────────────
-    if _truthy_env(os.getenv("LOG_TO_STDOUT")):
+    # ── Stdout — always on; set LOG_TO_STDOUT=false to suppress ───────────
+    if not _truthy_env(os.getenv("LOG_TO_STDOUT", "true")):
+        pass
+    else:
         stream_handler = logging.StreamHandler()
         stream_handler.setLevel(min_level)
         stream_handler.setFormatter(formatter)

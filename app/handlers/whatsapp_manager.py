@@ -55,13 +55,13 @@ def _post(payload: dict) -> dict:
 
     except requests.exceptions.ConnectionError:
         logger.exception("Network error sending %s message to %s", msg_type, to)
-        raise
+        return {}
     except requests.exceptions.Timeout:
         logger.exception("Timeout sending %s message to %s", msg_type, to)
-        raise
+        return {}
     except Exception:
         logger.exception("Unexpected error sending %s message to %s", msg_type, to)
-        raise
+        return {}
 
 
 # ─────────────────────────────────────────────
@@ -105,7 +105,7 @@ def send_read_receipt(to: str, message_id: str) -> dict:
 
     except Exception:
         logger.exception("Error sending read receipt to %s", to)
-        raise
+        return {}
 
 
 # ─────────────────────────────────────────────
@@ -605,4 +605,4 @@ def send_typing_indicator(to: str, message_id: str) -> dict:
 
     except Exception:
         logger.exception("Error sending typing indicator to %s", to)
-        raise
+        return {}
