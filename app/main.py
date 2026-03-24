@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 
@@ -107,11 +108,18 @@ async def whatsapp_webhook(request: Request, db: Session = Depends(get_db)):
         msg_type = message["type"]
         message_id = message["id"]
 
+        # Try to get user name from contacts
+        user_name = None
+        contacts = value.get("contacts", [])
+        if contacts:
+            user_name = contacts[0].get("profile", {}).get("name")
+
         logger.info(
-            "webhook_message_received | phone=%s type=%s message_id=%s",
+            "webhook_message_received | phone=%s type=%s message_id=%s name=%s",
             phone,
             msg_type,
             message_id,
+            user_name,
         )
 
         send_typing_indicator(phone, message_id)
@@ -166,6 +174,13 @@ async def whatsapp_webhook(request: Request, db: Session = Depends(get_db)):
 
         _mid_onboarding = session["step"] not in ("NEW", "IDLE", "COMPLETE")
 
+        # ── Concurrent webhook skip ──
+        if session["step"] in ("PROCESSING_PHOTO", "DAILY_PROCESSING_PHOTO"):
+            logger.info(
+                "concurrent_webhook_skip | phone=%s step=%s", phone, session["step"]
+            )
+            return Response(status_code=200)
+
         # ── Mid-onboarding cancel — restart from welcome at any step ──
         if (
             msg_type == "text"
@@ -177,19 +192,22 @@ async def whatsapp_webhook(request: Request, db: Session = Depends(get_db)):
                 phone,
                 session["step"],
             )
-            await onboarding.step_1_greeting_button(phone)
+            await onboarding.step_1_greeting_button(phone, name=user_name)
             return Response(status_code=200)
 
         if session["step"] == "NEW" or (
             incoming_text in ["hi", "hello", "hey", "start"] and not _mid_onboarding
         ):
-            await onboarding.step_1_greeting_button(phone)
+            await onboarding.step_1_greeting_button(phone, name=user_name)
 
         elif session["step"] == "AWAITING_BUTTON_CLICK":
             button_id = message.get("interactive", {}).get("button_reply", {}).get("id")
             if button_id == "start_onboarding":
                 logger.info("webhook_button_start_onboarding | phone=%s", phone)
-                await step_1b_ask_name(phone)
+                if session.get("name"):
+                    await onboarding.step_1b_skip_name_ask_shop(phone)
+                else:
+                    await step_1b_ask_name(phone)
             else:
                 logger.warning(
                     "webhook_unexpected_button | phone=%s button_id=%s",
@@ -255,6 +273,29 @@ async def whatsapp_webhook(request: Request, db: Session = Depends(get_db)):
             if msg_type == "image":
                 await step_3_handle_photo(phone, message, session)
             else:
+                # Race condition & Buffering check
+                # 1. If we are currently buffering images (list is not empty), ignore non-image messages (e.g. captions)
+                if state.sessions.get(phone, {}).get("image_buffer"):
+                    logger.info("buffering_skip | phone=%s", phone)
+                    return Response(status_code=200)
+
+                # 2. Wait briefly to let concurrent image requests update the state to PROCESSING
+                await asyncio.sleep(2.0)
+
+                # 3. Check buffer AND step again
+                # If an image arrived while we were sleeping, the buffer will now be populated
+                if state.sessions.get(phone, {}).get("image_buffer"):
+                    logger.info("buffering_skip_after_sleep | phone=%s", phone)
+                    return Response(status_code=200)
+
+                current_step = state.sessions.get(phone, {}).get("step")
+
+                if current_step == "PROCESSING_PHOTO":
+                    logger.info(
+                        "race_condition_skip | phone=%s step=%s", phone, current_step
+                    )
+                    return Response(status_code=200)
+
                 logger.warning(
                     "webhook_wrong_message_type | phone=%s step=AWAITING_PHOTO type=%s",
                     phone,
@@ -265,7 +306,6 @@ async def whatsapp_webhook(request: Request, db: Session = Depends(get_db)):
                     "Please send a photo of your shelves. 📸\n\n"
                     "Open your camera, take a clear picture of your stock, and send it here.",
                 )
-
         elif session["step"] == "AWAITING_VOICE_STOCK":
             if msg_type == "audio":
                 await step_3_handle_voice(phone, message, session)
@@ -287,15 +327,16 @@ async def whatsapp_webhook(request: Request, db: Session = Depends(get_db)):
                 await onboarding.step_5b_ask_stock_value(phone)
             elif button_id == "inventory_edit":
                 logger.info("webhook_inventory_edit_button | phone=%s", phone)
-                current = session.get("inventory", [])
-                items_text = "\n".join([f"• {i['item']}: {i['qty']}" for i in current])
                 send_text(
                     phone,
-                    f"Here is what I counted:\n\n{items_text}\n\n"
-                    "Type your corrections below.\n\n"
-                    "Example: Sneakers: 20, Heels: 5, Bags: 3",
+                    "No problem. What needs changing?\n\n"
+                    "You can say things like:\n"
+                    '• "Sneakers are actually 20"\n'
+                    '• "Rice is 500 cedis"\n'
+                    '• "Remove the milk"\n\n'
+                    "Type your correction below. 👇",
                 )
-                state.sessions[phone]["step"] = "AWAITING_TEXT_STOCK"
+                state.sessions[phone]["step"] = "AWAITING_CORRECTION"
             else:
                 logger.warning(
                     "webhook_unexpected_flow_input | phone=%s type=%s", phone, msg_type
@@ -308,6 +349,14 @@ async def whatsapp_webhook(request: Request, db: Session = Depends(get_db)):
                         {"id": "inventory_edit", "title": "No, edit it"},
                     ],
                 )
+
+        elif session["step"] == "AWAITING_CORRECTION":
+            if msg_type == "text":
+                await onboarding.step_4b_handle_correction(
+                    phone, incoming_text, session
+                )
+            else:
+                send_text(phone, "Please type your correction as text.")
 
         elif session["step"] == "AWAITING_CAPS_Q1":
             if msg_type != "text":

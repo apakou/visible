@@ -26,6 +26,7 @@ class Owner(Base):
     location = Column(String)  # e.g., "Circle Market"
     language_pref = Column(String, default="en")  # English or Twi
     category = Column(String)  # e.g. "Clothing & Footwear"
+    record_strength = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -40,6 +41,7 @@ class InventoryLog(Base):
     unit_cost_pesewas = Column(Integer)  # We use integers to avoid float errors
     unit_price_pesewas = Column(Integer)
     raw_message = Column(Text)  # For AI audit trail
+    stock_value_pesewas = Column(Integer)  # qty x unit_cost
     logged_at = Column(DateTime, default=datetime.utcnow)
 
 
